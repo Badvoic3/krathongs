@@ -54,10 +54,12 @@ RAMPS = {                        # glyphs from faint to dense, per material
     "incense": " .|||",
     "flame": " ^*#&@@",
     "spark": " .'*+*",
+    "firework": " ..'+*#@",
     "smoke": " .:'~",
 }
 MID = {name: i for i, name in enumerate(RAMPS)}
 LV = 24                          # density levels per ramp
+FIREWORKS_ON = True
 CHARS = sorted({c for r in RAMPS.values() for c in r})
 LUT = np.array([[CHARS.index(r[min(len(r) - 1, int(l / LV * len(r)))])
                  for l in range(LV)] for r in RAMPS.values()])
@@ -334,7 +336,7 @@ def anchors(t):
 # ------------------------------------------------------------------ scene ---
 def build_scene():
     """Static masks: temple silhouettes + lantern / spark / firefly seeds."""
-    global TEMPLE, EDGE, WINDOWS, WIN_H, LANTERNS, SPARKS, MOTES
+    global TEMPLE, EDGE, WINDOWS, WIN_H, LANTERNS, SPARKS, MOTES, FIREWORKS
     x, y = X / W, (HOR - Y) / H                  # y = height above the horizon
     m = (y >= 0) & (y < 0.012 + 0.004 * np.sin(x * 40))        # far bank
     cx, hw = 0.20, 0.17                                          # ordination hall
@@ -368,6 +370,23 @@ def build_scene():
                   a=rng.uniform(1, 4, 36), dr=rng.uniform(-70, 70, 36), rise=rng.uniform(160, 380, 36))
     MOTES = dict(x=rng.uniform(0.03, 0.97, 50), y=rng.uniform(HOR / H - 0.15, 0.98, 50),
                  p=rng.uniform(0, 6.28, (3, 50)), k=rng.integers(1, 4, (3, 50)))
+    FIREWORKS = []
+    for i in range(FW_COUNT):                        # evenly spaced shells, varied looks
+        style = ["peony", "ring", "willow", "peony", "ring", "peony"][i % 6]
+        k = 120 if style == "willow" else 96
+        c1, c2 = FW_COLOURS[i % len(FW_COLOURS)]
+        r = rng.uniform(170, 240)
+        while True:                                  # keep bursts clear of the moon
+            x, y = rng.uniform(0.15, 0.85), rng.uniform(0.12, 0.28)
+            if math.hypot(x * W - MX, y * H - MY) > r * S + MR * 1.2:
+                break
+        FIREWORKS.append(dict(
+            t0=i * LOOP / FW_COUNT + rng.uniform(-0.25, 0.25), x=x, y=y, r=r,
+            c1=c1, c2=c2, style=style,
+            ang=rng.uniform(0, 2 * math.pi, k),
+            spd=np.full(k, 1.0) + rng.normal(0, 0.03, k) if style == "ring" else rng.uniform(0.35, 1.0, k) ** 0.5,
+            ph=rng.uniform(0, 6.28, k), g=110.0 if style == "willow" else 45.0,
+            life=3.0 if style == "willow" else FW_LIFE))
 
 
 def sky_layer(cv, t):
@@ -415,6 +434,48 @@ def lantern_layer(cv, t):
         putmax(cv, g, np.array([1.0, 0.55, 0.18], F32) * g[..., None], "glow")
 
 
+FW_COUNT, FW_RISE, FW_LIFE = 6, 0.9, 2.3
+FW_COLOURS = [((1.0, 0.80, 0.35), (1.0, 0.45, 0.10)), ((1.0, 0.30, 0.30), (1.0, 0.75, 0.55)),
+              ((0.40, 1.0, 0.65), (0.20, 0.70, 1.0)), ((1.0, 0.85, 0.55), (0.9, 0.55, 0.15)),
+              ((1.0, 0.45, 0.90), (0.65, 0.50, 1.0)), ((0.35, 0.85, 1.0), (0.95, 0.95, 1.0))]
+
+
+def firework_layer(cv, t):
+    """Shells rise from behind the temples, burst, sag under gravity and fade."""
+    flash = np.zeros(3, F32)
+    sky = Y < HOR
+    for fw in FIREWORKS:
+        a = (t - fw["t0"]) % LOOP
+        cx, cy, R = fw["x"] * W, fw["y"] * H, fw["r"] * S
+        c1, c2 = np.array(fw["c1"], F32), np.array(fw["c2"], F32)
+        if a < FW_RISE:                                          # rocket + short trail
+            e = np.maximum(a - np.arange(7) * 0.035, 0) / FW_RISE
+            e = 1 - (1 - e) ** 2
+            x = cx + 6 * S * np.sin(e * 9 + fw["t0"]) * (1 - e)
+            y = HOR + (cy - HOR) * e
+            b = np.linspace(1, 0.15, 7) * (a > np.arange(7) * 0.035)
+            putcells(cv, x, y, np.where(b > 0, 0.35 + 0.6 * b, 0), np.outer(b, [1.0, 0.75, 0.40]), "spark")
+            continue
+        b = a - FW_RISE
+        life = b / fw["life"]
+        if life >= 1:
+            continue
+        f = math.exp(-b * 5)                                     # burst flash
+        flash += c1 * f
+        dd = np.hypot(X - cx, Y - cy) / (R * 1.6)
+        cv[1][sky] += (np.exp(-dd ** 2) * f * 0.35)[sky][:, None] * c1
+        tw = np.where(life > 0.55, np.sin(W0 * 37 * t + fw["ph"]) > -0.2, True)
+        col = c1 * (1 - life) + c2 * life + 0.6 * f
+        for j in range(5):                                       # head + streak
+            bb = max(b - j * 0.05, 0.0)
+            dist = R * fw["spd"] * (1 - math.exp(-2.8 * bb))
+            x = cx + np.cos(fw["ang"]) * dist
+            y = cy + np.sin(fw["ang"]) * dist * 0.92 + fw["g"] * S * bb * bb
+            br = (1 - life) ** 1.2 * (1 - 0.2 * j) * tw * (1 + 1.5 * f)
+            putcells(cv, x, y, np.clip(0.32 + 0.6 * br, 0, 1), np.outer(br, col), "firework")
+    return flash
+
+
 def temple_layer(cv, t, fx, fy):
     warm = np.exp(-np.hypot(X - fx, Y - fy) / (380 * S))[..., None]
     body = np.array([0.11, 0.055, 0.025], F32) + warm * np.array([0.30, 0.14, 0.04], F32)
@@ -425,7 +486,7 @@ def temple_layer(cv, t, fx, fy):
     put(cv, WINDOWS, 0.95, np.array([1.0, 0.74, 0.30], F32) * fl[..., None], "window")
 
 
-def water_layer(cv, t, fx):
+def water_layer(cv, t, fx, flash=None):
     """Water per cell: summed waves, perspective, and light reflections."""
     wm = Y >= HOR
     q = np.clip((Y - HOR) / (H - HOR), 0, 1)
@@ -439,6 +500,8 @@ def water_layer(cv, t, fx):
     col = mixc((0.04, 0.28, 0.30), (0.12, 0.55, 0.52), wave)
     col = mixc(col, (0.55, 0.30, 0.10), np.clip(1 - q * 9, 0, 1) * 0.7)
     col = col * (0.16 + 0.75 * dens)[..., None]
+    if flash is not None:                                       # fireworks light the river
+        col = col + flash * (0.12 * (1 - q))[..., None]
 
     r0 = int(HOR // CH)                                         # mirror the skyline
     rm = np.clip(2 * r0 - RR - 1, 0, ROWS - 1).astype(int)
@@ -524,8 +587,9 @@ def render_cells(t):
     fx, fy, tips = anchors(t)
     sky_layer(cv, t)
     lantern_layer(cv, t)
+    flash = firework_layer(cv, t) if FIREWORKS_ON else None
     temple_layer(cv, t, fx, fy)
-    water_layer(cv, t, fx)
+    water_layer(cv, t, fx, flash)
     render_krathong(cv, t, reflect=True)
     render_krathong(cv, t)
     smoke_layer(cv, t, tips)
@@ -763,7 +827,10 @@ def main():
     ap.add_argument("--showcase", action="store_true", help="add the scrolling code panel (1080x1920)")
     ap.add_argument("--png", type=float, metavar="T", help="render one still at time T seconds")
     ap.add_argument("--term", action="store_true", help="play live in a truecolor terminal")
+    ap.add_argument("--no-fireworks", action="store_true", help="a quiet night, no fireworks")
     args = ap.parse_args()
+    global FIREWORKS_ON
+    FIREWORKS_ON = not args.no_fireworks
     if args.term:
         play_terminal(args)
     elif args.png is not None:
