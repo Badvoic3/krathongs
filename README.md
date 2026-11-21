@@ -15,13 +15,14 @@ Full render: [`media/krathong_showcase.mp4`](media/krathong_showcase.mp4) (1080Ã
 
 Inspired by a Loy Krathong clip from the TikTok account *Python Hub*.
 
-## Three scenes
+## Four scenes
 
 | | Scene | Run it |
 |---|---|---|
 | <img src="media/preview.gif" width="220"> | **Loy Krathong**: the krathong on a moonlit river, lanterns, the dragon and the fireworks show. | `krathong_ascii.py` |
-| <img src="media/castle_preview.png" width="220"> | **Castle Christmas**: a spruce builds itself in front of a fairy-tale castle: a rising cut capped with stacked, broken rows of snow over dense two-tone needles, matched frame by frame to the reference clip. It then gets dressed with gold garland swags, baubles, lights, gifts and a star. The tree stands still; chasing spiral lights, a glittering wave rising up it, sliding glints on the baubles and a star with turning, pulsing rays keep it lively while the fireworks loop. The plaza has a toy train circling the tree, a walking snowman, snowmen, lamp posts, lit shrubs, a Main Street of shopfronts with marquee bulbs and string lights, a crowd with Santa hats and balloons, and Santa's sleigh (sack of gifts, reins, three galloping reindeer with antlers and bells) circling the castle. | `castle_tree.py` |
+| <img src="media/castle_preview.png" width="220"> | **Castle Christmas**: a spruce builds itself in front of a fairy-tale castle: 24 whorls of drooping branches grow branch by branch, each reaching out from the trunk while the tree fills in upward, with fresh growth flashing snow-white before it melts to green. This follows the reference clip's build. It then gets dressed: a thin gold tinsel spiral draws itself on from the bottom with a white-hot head, then baubles, lights, gifts and a star. The tree stands still; chasing spiral lights, a glittering wave rising up it, sliding glints on the baubles and a star with turning, pulsing rays keep it lively while the fireworks loop. The plaza has a toy train circling the tree, a walking snowman, snowmen, lamp posts, lit shrubs, a Main Street of shopfronts with marquee bulbs and string lights, a crowd with Santa hats and balloons, and Santa's sleigh (sack of gifts, reins, three galloping reindeer with antlers and bells) circling the castle. | `castle_tree.py` |
 | <img src="media/sunset_preview.png" width="220"> | **Sunset Sea**: a big striped sun on the horizon under a purple-to-gold sky, a golden road across the waves, surf rolling onto the beach, palm silhouettes framing the view, plus a lighthouse beam, sailboats and gulls. The water mirrors every firework. | `sunset_sea.py` |
+| <img src="media/lily_preview.png" width="220"> | **Lily Bouquet**: green shoots rise, leaves arch out from the base and slim buds swell on the stem tips. Then each lily blooms in turn: its petals peel open from the tip, outer three first, curl back and turn to face you, revealing freckled throats, stamens and anthers, with a little sparkle. A satin ribbon wraps the stems and ties a bow, then the bouquet sways in the breeze while pollen drifts, bokeh glows and petals fall. No fireworks. | `lily_bouquet.py` |
 
 Running a scene plays it **live in your terminal**: no flags needed. The castle scene starts
 with the tree building itself, then the show loops every 20 s, with the tree in focus and the
@@ -36,6 +37,9 @@ park softly dimmed behind it.
 ```bash
 .venv/bin/python sunset_sea.py
 ```
+```bash
+.venv/bin/python lily_bouquet.py
+```
 
 Add `--video` to render a video file instead (the castle video includes the build, then `--loops` loops):
 
@@ -48,7 +52,7 @@ Every scene takes the same flags (below), and all of them share one engine and f
 `krathong_ascii.py`.
 
 The castle build is inspired by an ASCII Christmas-tree
-clip from the TikTok account *dwcminh.ascii*. The castle, the park and the show are original designs.
+clip from the TikTok account *dwcminh.ascii*, and the bouquet by an ASCII lily clip from *arimecoa*. The castle, the park and the show are original designs.
 
 ---
 

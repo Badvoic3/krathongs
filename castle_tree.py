@@ -3,7 +3,7 @@
 castle_tree.py - a Christmas tree builds itself in front of a fairy-tale castle, then
 the castle fireworks show loops forever. Coloured ASCII, on krathong_ascii.py's engine.
 
-The tree is a 3-D point cloud (one fuzzy needle cone, trunk, skirt, garland swags, baubles, fairy
+The tree is a 3-D point cloud (24 whorls of drooping branches, trunk, skirt, garland swags, baubles, fairy
 lights and gifts). It rises from the ground, gets dressed, is topped with a star, then
 turns slowly while the fireworks play above the castle and the snow keeps falling.
 
@@ -106,20 +106,43 @@ def build_tree():
                           cen=np.broadcast_to(np.asarray(cen if cen is not None else (0, 0, 0), F32), (n, 3)).copy(),
                           ph=np.broadcast_to(np.asarray(ph, F32), (n,)).copy()))
 
-    # one smooth needle cone with a fuzzy, bumpy surface: two-tone green and white flecks
-    h = TOP - CONE_Y0
-    U, V = grid(math.hypot(h, CONE_RB) * 1.4, 2 * math.pi * CONE_RB * 1.4)
-    th = V * 2 * math.pi
-    y = CONE_Y0 + U * h
-    bump = (0.5 + 0.5 * np.sin(th * 11 + y * 9)) * (0.5 + 0.5 * np.sin(th * 5 - y * 13 + 1.1))
-    r = rcone(y) * (0.97 + 0.08 * bump) + rng.normal(0, 0.018, U.shape) * (1 - U)
-    P = np.stack([r * np.cos(th), y, r * np.sin(th)], -1)
-    N = np.stack([np.cos(th), np.full_like(th, CONE_RB / h), np.sin(th)], -1)
-    noise = rng.uniform(size=U.shape).astype(F32)
-    col = np.where((noise > 0.5)[..., None], np.array([0.22, 0.70, 0.28], F32), np.array([0.05, 0.30, 0.11], F32))
-    col = col * (0.75 + 0.5 * rng.uniform(size=U.shape))[..., None].astype(F32)
-    col = np.where((noise > 0.97)[..., None], np.array([0.88, 0.92, 0.98], F32), col)
-    add(P, N, col, "needle", 0)
+    # needles: whorls of drooping branches, denser and longer at the bottom. Every point
+    # has its own appear time - its whorl's grow time plus how far out along the branch it
+    # sits - so branches reach outward from the trunk while the whorls fill in upward.
+    dens_k = (SAMPT / 60.0) ** 2
+    tips = []
+    for i, y in enumerate(np.linspace(CONE_Y0 + 0.02, TOP - 0.06, 24)):
+        u = (y - CONE_Y0) / (TOP - CONE_Y0)
+        R = float(rcone(np.array([y], F32))[0]) + 0.05
+        nb = int(6 + 12 * (1 - u))
+        for b_ in range(nb):
+            a = 2 * np.pi * (b_ + 0.5 * rng.random()) / nb + i * 0.77
+            L = R * rng.uniform(0.85, 1.08)
+            n = max(8, int((25 + 270 * L) * dens_k))
+            sb = rng.random(n) ** 0.65                          # 0 trunk .. 1 tip
+            d = np.array([np.cos(a), 0, np.sin(a)], F32)
+            side = np.array([-np.sin(a), 0, np.cos(a)], F32)
+            spread = (0.025 + 0.09 * sb) * rng.normal(0, 1, n)
+            sl = sb * L
+            P = d * sl[:, None] + side * spread[:, None]
+            P[:, 1] = y + 0.06 * sl - 0.20 * sl ** 2 + 0.012 * rng.normal(0, 1, n)
+            N = d * 0.75 + np.array([0, 0.55, 0], F32) + 0.3 * rng.normal(0, 1, (n, 3))
+            ao = (0.30 + 0.70 * sb ** 1.3) * rng.uniform(0.75, 1.1, n)
+            snow = (sb > 0.5) & (rng.random(n) < 0.06 * sb) & (N[:, 1] > 0.5)
+            green = np.array([0.10, 0.48, 0.18], F32) + np.array([0.12, 0.38, 0.14], F32) * rng.random((n, 1))
+            col = np.where(snow[:, None], np.array([0.92, 0.95, 1.0], F32), green * ao[:, None])
+            add(P, N, col, "needle", 0, tap=grow_time(y) + 0.45 * sb)
+            tl = 0.93 * L
+            tips.append((d * tl + np.array([0, y + 0.06 * tl - 0.20 * tl ** 2, 0], F32), y))
+
+    m = int(6000 * dens_k)                                     # dark inner cone: no see-through
+    y = CONE_Y0 + (TOP - 0.1 - CONE_Y0) * rng.random(m)
+    phi = rng.random(m) * 2 * np.pi
+    r = 0.6 * rcone(y)
+    add(np.stack([np.cos(phi) * r, y, np.sin(phi) * r], 1), np.stack([np.cos(phi), np.full(m, 0.3), np.sin(phi)], 1),
+        (0.06, 0.26, 0.10), "needle", 0, tap=grow_time(y))
+    global TIPS_T
+    TIPS_T = tips
 
     U, V = grid(0.32, 2 * math.pi * 0.13)                     # trunk
     th = V * 2 * math.pi
@@ -131,20 +154,19 @@ def build_tree():
     add(np.stack([r * np.cos(th), 0.015 + 0 * r, r * np.sin(th)], -1),
         np.stack([0 * th, 1 + 0 * th, 0 * th], -1), skirt, "gift", 0)
 
-    # thick gold garland swags draped round the tree, drawn on level by level from the bottom
-    for k in range(5):
-        yk = 0.62 + k * 0.40
-        nsw = 8 - k
-        ns = int(2 * math.pi * float(rcone(np.array([yk]))[0]) * SAMPT * 2) + 24
-        a = np.linspace(0, 2 * np.pi, ns, endpoint=False, dtype=F32)
-        y = yk - (0.16 - 0.02 * k) * np.abs(np.sin(nsw * a / 2)) + 0.05 * a / (2 * np.pi)
-        r = rcone(y) + 0.045
-        radial = np.stack([np.cos(a), 0 * a, np.sin(a)], -1)
-        centre = radial * r[:, None] + np.stack([0 * a, y, 0 * a], -1)
-        for q in np.linspace(0, 2 * np.pi, 6, endpoint=False):
-            off = radial * 0.03 * math.cos(q) + np.array([0, 1, 0], F32) * 0.03 * math.sin(q)
-            tcol = np.array([1.0, 0.80, 0.32], F32) * (0.75 + 0.25 * np.sin(a * 60 + q))[:, None]
-            add(centre + off, off, tcol, "tinsel", 2, tap=7.0 + 0.45 * k + 0.4 * a / (2 * np.pi))
+    # tinsel garland: one thin gold spiral drooping in swags between hanging points, drawn
+    # on from the bottom up; its head runs white-hot and cools to gold behind it
+    ng = int(2600 * max(1.0, SAMPT / 60.0))
+    u = np.linspace(0, 1, ng, dtype=F32)
+    yg = CONE_Y0 + 0.15 + (TOP - CONE_Y0 - 0.45) * u
+    ag = 2 * np.pi * 3.6 * u + 0.9
+    swag = -0.07 * np.abs(np.sin(ag * 2.5))
+    rg = rcone(yg) + 0.07
+    line = np.stack([np.cos(ag) * rg, yg + swag, np.sin(ag) * rg], 1)
+    for _ in range(4):
+        nrm = np.stack([np.cos(ag), np.full_like(u, 0.3), np.sin(ag)], 1) + 0.6 * rng.normal(0, 1, (ng, 3))
+        add(line + 0.016 * rng.normal(0, 1, line.shape), nrm, (1.0, 0.80, 0.32), "tinsel", 2,
+            tap=T_GARLAND[0] + u * (T_GARLAND[1] - T_GARLAND[0]), ph=rng.random(ng) * 2 * np.pi)
 
     # baubles pop on, bottom to top, each with its own colour and a specular glint
     for i in range(52):
@@ -159,15 +181,14 @@ def build_tree():
                                (0.20, 0.45, 1.0)][i % 5], "bauble", 1,
             tap=7.6 + 1.5 * (y - 0.45) / 1.9 + rng.uniform(0, 0.8), cen=cen)
 
-    # fairy lights twinkle on from the bottom up
-    for i in range(110):
-        y = float(rng.uniform(0.35, 2.55))
-        th0 = float(rng.uniform(0, 2 * np.pi))
-        d = np.array([math.cos(th0), 0, math.sin(th0)], F32)
-        warm = rng.uniform() < 0.6
-        col = (1.0, 0.82, 0.45) if warm else PALETTE[int(rng.integers(0, len(PALETTE)))]
-        add((d * (float(rcone(y)) + 0.03) + np.array([0, y, 0], F32))[None], d[None], col, "bulb", 3,
-            tap=9.0 + 1.6 * y / 2.6, ph=th0)
+    # fairy lights on the branch tips, twinkling on from the bottom up
+    pick = rng.choice(len(TIPS_T), min(150, len(TIPS_T)), replace=False)
+    for j in pick:
+        c, y = TIPS_T[j]
+        th0 = math.atan2(float(c[2]), float(c[0]))
+        d = np.array([math.cos(th0), 0.3, math.sin(th0)], F32)
+        col = (1.0, 0.82, 0.45) if rng.uniform() < 0.6 else PALETTE[int(rng.integers(0, len(PALETTE)))]
+        add(c[None], d[None], col, "bulb", 3, tap=9.0 + 1.6 * y / 2.6, ph=th0)
 
     # gifts: wrapped boxes with a crossed ribbon and a bow, popping in around the base
     for i, (ang, rr, w, d, h, col, rib) in enumerate([
@@ -199,6 +220,15 @@ def build_tree():
     TREE = {k: np.concatenate([p[k] for p in parts]) for k in parts[0]}
 
 
+T_GARLAND = (6.7, 8.6)                         # when the garland starts and finishes drawing on
+
+
+def grow_time(y):
+    """When the whorl at height y starts growing: bottom first, slowing toward the tip."""
+    u = np.clip((np.asarray(y, F32) - CONE_Y0) / (TOP - CONE_Y0), 0, 1)
+    return 1.0 + 4.9 * u ** 1.15
+
+
 def project_t(P):
     yv = P[:, 1] * CPT - P[:, 2] * SPT
     zv = P[:, 1] * SPT + P[:, 2] * CPT
@@ -209,25 +239,14 @@ def project_t(P):
 def tree_layer(cv, t, flash):
     """Grow, pose, z-buffer and light the tree for time t.
 
-    The build swells the whole tree up from a flat white-capped disc, like a green pile
-    of snow being pushed upward; the snow cap melts off as it reaches full height."""
+    Each needle point appears at its own time (whorl by whorl, trunk to tip), so branches
+    reach outward as the tree fills in upward. A point that has just appeared is fresh
+    snow-white and melts to green over half a second - which gives the growing tree its
+    soft, snowy leading edge."""
     T = TREE
-    bh = TOP * float(smooth((t - 1.0) / 6.0))                  # height of the rising cut
     kd = T["kind"]
-    vis = np.where(kd == 0, T["P"][:, 1] <= bh, t >= T["tap"])
-    idx = np.flatnonzero(vis)
+    idx = np.flatnonzero(t >= T["tap"])
     P = T["P"][idx].copy()
-    capP = np.zeros((0, 3), F32)
-    if 0.0 < bh < TOP - 0.02:                                  # heaped snow on the cut face
-        r = float(rcone(np.array([bh], F32))[0])
-        q = CAP_UV[:, 0] * r
-        lump = 0.5 + 0.5 * np.sin(CAP_UV[:, 1] * 7 + q * 9) * np.sin(CAP_UV[:, 1] * 3 - q * 5 + 1.3)
-        capP = np.concatenate([                           # two stacked, broken layers of snow
-            np.stack([q * np.cos(CAP_UV[:, 1]), bh + 0.03 * lump + 0 * q, q * np.sin(CAP_UV[:, 1])], 1),
-            np.stack([0.72 * q * np.cos(CAP_UV[:, 1]), bh + 0.13 + 0.03 * lump, 0.72 * q * np.sin(CAP_UV[:, 1])], 1)]
-        ).astype(F32)
-        keep_ = np.concatenate([lump > 0.30, lump > 0.42])     # gaps in the snow
-        capP = capP[keep_]
     pop = kd[idx] == 1
     if pop.any():
         sc = backout((t - T["tap"][idx][pop]) / 0.35)
@@ -235,11 +254,6 @@ def tree_layer(cv, t, flash):
         P[pop] = cen + (P[pop] - cen) * sc[:, None]
     R = K.Ry(TREE_YAW)
     ex = train_points(t)                                       # track + train don't turn
-    if len(capP):
-        n_ = len(capP)
-        ex = dict(P=np.vstack([capP @ R.T, ex["P"]]), N=np.vstack([np.tile([0, 1, 0], (n_, 1)).astype(F32), ex["N"]]),
-                  C=np.vstack([np.tile([0.92, 0.96, 1.0], (n_, 1)).astype(F32), ex["C"]]),
-                  K=np.concatenate([np.full(n_, 7), ex["K"]]), M=np.concatenate([np.full(n_, K.MID["frost"]), ex["M"]]))
     nt = len(idx)
     xs, ys, zv = project_t(np.vstack([P @ R.T, ex["P"]]))
     cells, w = K.zbuffer(xs, ys, zv)
@@ -264,31 +278,37 @@ def tree_layer(cv, t, flash):
         lit[shiny] += (np.clip(n[shiny] @ (hl / np.linalg.norm(hl)), 0, 1) ** 24 * 1.1)[:, None]
     if flash is not None:
         lit += base * flash * 0.5
-    if 0.0 < bh < TOP - 0.02:                                  # snow spilling over the rim, lumpy edge
-        ang = np.arctan2(n[:, 2], n[:, 0])
-        depth = 0.03 + 0.06 * (0.5 + 0.5 * np.sin(ang * 9 + yy * 13)) + 0.03 * np.sin(ang * 23)
-        rim = (kk == 0) & (bh - yy < depth)
-        lit[rim], mat = np.array([0.80, 0.84, 0.90], F32), np.where(rim, K.MID["snowcap"], mat)
-    capc = kk == 7
-    if capc.any():
-        lit[capc] = base[capc] * (0.62 + 0.18 * np.clip(n[capc] @ LDIR, 0, 1))[:, None]
-        mat = np.where(capc, K.MID["snowcap"], mat)
+    if t < BUILD:                                              # fresh growth: white, melting to colour
+        age = np.full(m, 9.0, F32)
+        age[tr] = t - T["tap"][g]
+        fresh = (np.clip(1 - age / 0.30, 0, 1) * (kk == 0) * (n[:, 1] > -0.1)   # only up-facing growth
+                 + np.clip(1 - age / 0.35, 0, 1) * (kk == 2))                    # the garland's hot head
+        if fresh.any():
+            lit = lit + (np.array([0.88, 0.92, 1.0], F32) - lit) * (fresh ** 0.6)[:, None]
+            mat = np.where(fresh > 0.35, K.MID["snowcap"], mat)
     dens = np.clip(0.30 + 0.85 * lum(lit), 0.32, 1.0)
     needles = (kk == 0) & (mat == K.MID["needle"])
     dens[needles] = np.clip(0.62 + 0.7 * lum(lit[needles]), 0.6, 1.0)   # packed W%&$ needles
-    dens[capc | (mat == K.MID["snowcap"])] = 0.97
+    dens[mat == K.MID["snowcap"]] = 0.97
     if t >= BUILD:                                             # a glittering wave rises up the tree
         yw = TOP * 1.25 * ((t - BUILD) * 4 / LOOP % 1.0) - 0.15
         band = np.exp(-((yy - yw) / 0.10) ** 2) * (kk == 0)
         hit = band * (hash2(cells.astype(F32), 3.0, 5.0) > 0.55) > 0.35
         lit[hit], dens[hit] = np.array([1.0, 1.0, 0.92], F32), 1.0
+    tin = kk == 2
+    if tin.any():                                              # tinsel glitters
+        sp = np.sin(W0L * 23 * t + ph[tin] * 7)
+        hot = lit[tin]                                         # (white while freshly drawn)
+        gold = base[tin] * (0.85 + 0.30 * sp)[:, None] + (0.5 * np.clip(sp - 0.8, 0, 1) / 0.2)[:, None]
+        lit[tin] = np.where((mat[tin] == K.MID["snowcap"])[:, None], hot, gold)
+        dens[tin] = np.maximum(dens[tin], 0.85)
     bulbs = kk == 3
     if bulbs.any():                                            # lights chase in spirals up the tree
         wave = W0L * 8 * t - 2 * np.pi * (1.3 * yy[bulbs] / TOP + ph[bulbs] / (2 * np.pi))
         tw = np.clip(np.cos(wave), 0, 1) ** 3
         lit[bulbs] = base[bulbs] * (0.35 + 0.75 * tw)[:, None] + (0.35 * tw)[:, None]
         dens[bulbs] = 1.0
-    fleck = (kk == 0) & (hash2(cells.astype(F32), 1.0, 2.0) > 0.93)  # white snow flecks in the needles
+    fleck = (kk == 0) & (hash2(cells.astype(F32), 1.0, 2.0) > 0.96)  # white snow flecks in the needles
     lit[fleck] = np.array([0.80, 0.86, 0.95], F32)
     glow = kk == 6                                             # train headlight
     lit[glow], dens[glow] = base[glow], 1.0
@@ -1183,17 +1203,13 @@ def setup(cols, rows, cw, ch):
     HOR = 0.62 * K.H
     CSU = min(0.95 * K.W, 1.15 * K.H)                           # castle unit (px)
     KXT, KYT = 0.5 * K.W, 0.93 * K.H
-    KST = min(0.21 * K.H, 0.31 * K.W)                           # tree scale (px per unit)
+    KST = min(0.245 * K.H, 0.36 * K.W)                          # tree scale (px per unit)
     SAMPT = 2.2 * KST / min(K.CW, K.CH)
     STREET_D = 0.40 * K.W                                       # street half-width at the near edge
     K.HOR, K.MX, K.MY, K.MR = HOR, -1e9, -1e9, 0.0              # rockets rise from the castle
     K.build_show()
     build_tree()
     build_train()
-    global CAP_UV
-    na = max(24, int(2 * math.pi * 1.1 * SAMPT))
-    rr, aa = np.meshgrid(np.linspace(0, 1, max(6, int(1.1 * SAMPT))), np.linspace(0, 2 * np.pi, na, endpoint=False))
-    CAP_UV = np.stack([np.sqrt(rr.ravel()), aa.ravel()], 1).astype(F32)
     build_castle()
     build_static()
     build_plaza()
