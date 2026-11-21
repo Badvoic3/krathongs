@@ -3,7 +3,7 @@
 castle_tree.py - a Christmas tree builds itself in front of a fairy-tale castle, then
 the castle fireworks show loops forever. Coloured ASCII, on krathong_ascii.py's engine.
 
-The tree is a 3-D point cloud (five needle tiers, trunk, skirt, garland, baubles, fairy
+The tree is a 3-D point cloud (one fuzzy needle cone, trunk, skirt, garland swags, baubles, fairy
 lights and gifts). It rises from the ground, gets dressed, is topped with a star, then
 turns slowly while the fireworks play above the castle and the snow keeps falling.
 
@@ -20,7 +20,8 @@ import krathong_ascii as K
 from krathong_ascii import F32, hash2, lum, mixc, putcells, putflat, putmax, window, sub
 
 K.register_ramps({
-    "needle": " .:;+*#%@",
+    "needle": " .,xvV%&$W",
+    "snowcap": " .:=##",
     "frost": " .:-+*#@",
     "bauble": " .oO0@",
     "tinsel": " .~*#@",
@@ -54,9 +55,10 @@ BUILD = 12.5                      # the tree is finished
 SHOW = K.LOOP                     # the fireworks show repeats every 10 s
 LOOP = 20.0                       # scene loop: one turn of the tree = two shows
 W0L = 2 * math.pi / LOOP
-PITCH_T, PERSP_T = 0.10, 0.07
+PITCH_T, PERSP_T = 0.24, 0.07                 # looking down a little, so the snow cap reads
 CPT, SPT = math.cos(PITCH_T), math.sin(PITCH_T)
-TIERS = [(0.28 + k * 0.44, 0.80 - 0.04 * k, 1.05 - 0.19 * k) for k in range(5)]  # base y, height, radius
+CONE_Y0, CONE_RB = 0.30, 1.08                  # the needles start above the trunk
+TREE_YAW = 0.35                                # the tree stands still, turned a little
 TOP, STAR_Y = 2.70, 2.86
 LDIR = np.array([-0.55, 0.6, 0.6], F32) / np.linalg.norm([-0.55, 0.6, 0.6])
 HALF = (LDIR + np.array([0, 0, 1], F32)) / np.linalg.norm(LDIR + np.array([0, 0, 1], F32))
@@ -76,11 +78,9 @@ def backout(x):
 
 
 def rcone(y):
-    """Outer radius of the tree at height y (max over the tiers)."""
-    r = np.zeros_like(np.asarray(y, F32))
-    for yb, h, rb in TIERS:
-        r = np.maximum(r, np.where((y >= yb) & (y <= yb + h), rb * (1 - (y - yb) / h), 0))
-    return r
+    """Radius of the needle cone at height y."""
+    y = np.asarray(y, F32)
+    return np.where((y >= CONE_Y0) & (y <= TOP), CONE_RB * (1 - (y - CONE_Y0) / (TOP - CONE_Y0)), 0).astype(F32)
 
 
 # ------------------------------------------------------------------ tree ---
@@ -106,20 +106,20 @@ def build_tree():
                           cen=np.broadcast_to(np.asarray(cen if cen is not None else (0, 0, 0), F32), (n, 3)).copy(),
                           ph=np.broadcast_to(np.asarray(ph, F32), (n,)).copy()))
 
-    # needle tiers: scalloped, drooping cones with fuzzy needles and a dusting of frost
-    for k, (yb, h, rb) in enumerate(TIERS):
-        U, V = grid(math.hypot(h, rb), 2 * math.pi * rb)
-        th = V * 2 * math.pi
-        sc = 0.5 + 0.5 * np.sin(th * 14 + k * 1.7)
-        r = rb * (1 - U) ** 1.05 * (1 + 0.09 * sc * (1 - U) ** 3)
-        y = yb + U * h - 0.07 * (1 - U) ** 2 * sc
-        P = np.stack([r * np.cos(th), y, r * np.sin(th)], -1) + rng.normal(0, 0.012, U.shape + (3,))
-        N = np.stack([np.cos(th), np.full_like(th, rb / h), np.sin(th)], -1)
-        noise = rng.uniform(size=U.shape).astype(F32)
-        col = mixc((0.06, 0.40, 0.14), (0.20, 0.78, 0.30), noise) * (0.85 + 0.25 * U)[..., None]
-        col = np.where((U < 0.10)[..., None], mixc(col, (0.25, 0.62, 0.30), 0.6), col)
-        col = np.where(((noise > 0.94) & (U > 0.05))[..., None], np.array([0.85, 0.90, 0.96], F32), col)
-        add(P, N, col, "needle", 0)
+    # one smooth needle cone with a fuzzy, bumpy surface: two-tone green and white flecks
+    h = TOP - CONE_Y0
+    U, V = grid(math.hypot(h, CONE_RB) * 1.4, 2 * math.pi * CONE_RB * 1.4)
+    th = V * 2 * math.pi
+    y = CONE_Y0 + U * h
+    bump = (0.5 + 0.5 * np.sin(th * 11 + y * 9)) * (0.5 + 0.5 * np.sin(th * 5 - y * 13 + 1.1))
+    r = rcone(y) * (0.97 + 0.08 * bump) + rng.normal(0, 0.018, U.shape) * (1 - U)
+    P = np.stack([r * np.cos(th), y, r * np.sin(th)], -1)
+    N = np.stack([np.cos(th), np.full_like(th, CONE_RB / h), np.sin(th)], -1)
+    noise = rng.uniform(size=U.shape).astype(F32)
+    col = np.where((noise > 0.5)[..., None], np.array([0.22, 0.70, 0.28], F32), np.array([0.05, 0.30, 0.11], F32))
+    col = col * (0.75 + 0.5 * rng.uniform(size=U.shape))[..., None].astype(F32)
+    col = np.where((noise > 0.97)[..., None], np.array([0.88, 0.92, 0.98], F32), col)
+    add(P, N, col, "needle", 0)
 
     U, V = grid(0.32, 2 * math.pi * 0.13)                     # trunk
     th = V * 2 * math.pi
@@ -131,18 +131,20 @@ def build_tree():
     add(np.stack([r * np.cos(th), 0.015 + 0 * r, r * np.sin(th)], -1),
         np.stack([0 * th, 1 + 0 * th, 0 * th], -1), skirt, "gift", 0)
 
-    # gold tinsel garland spiralling up, drawn on from the bottom
-    ns = int(15 * SAMPT)
-    s = np.linspace(0, 1, ns, dtype=F32)
-    y = 0.40 + s * 2.15
-    th = 2 * np.pi * 4.2 * s + 0.5
-    r = rcone(y) + 0.035
-    radial = np.stack([np.cos(th), 0 * th, np.sin(th)], -1)
-    centre = radial * r[:, None] + np.stack([0 * th, y, 0 * th], -1)
-    for q in np.linspace(0, 2 * np.pi, 4, endpoint=False):
-        off = radial * 0.022 * math.cos(q) + np.array([0, 1, 0], F32) * 0.022 * math.sin(q)
-        tcol = np.array([1.0, 0.78, 0.30], F32) * (0.8 + 0.2 * np.sin(s * 300 + q))[:, None]
-        add(centre + off, off, tcol, "tinsel", 2, tap=7.0 + 2.6 * s)
+    # thick gold garland swags draped round the tree, drawn on level by level from the bottom
+    for k in range(5):
+        yk = 0.62 + k * 0.40
+        nsw = 8 - k
+        ns = int(2 * math.pi * float(rcone(np.array([yk]))[0]) * SAMPT * 2) + 24
+        a = np.linspace(0, 2 * np.pi, ns, endpoint=False, dtype=F32)
+        y = yk - (0.16 - 0.02 * k) * np.abs(np.sin(nsw * a / 2)) + 0.05 * a / (2 * np.pi)
+        r = rcone(y) + 0.045
+        radial = np.stack([np.cos(a), 0 * a, np.sin(a)], -1)
+        centre = radial * r[:, None] + np.stack([0 * a, y, 0 * a], -1)
+        for q in np.linspace(0, 2 * np.pi, 6, endpoint=False):
+            off = radial * 0.03 * math.cos(q) + np.array([0, 1, 0], F32) * 0.03 * math.sin(q)
+            tcol = np.array([1.0, 0.80, 0.32], F32) * (0.75 + 0.25 * np.sin(a * 60 + q))[:, None]
+            add(centre + off, off, tcol, "tinsel", 2, tap=7.0 + 0.45 * k + 0.4 * a / (2 * np.pi))
 
     # baubles pop on, bottom to top, each with its own colour and a specular glint
     for i in range(52):
@@ -153,7 +155,8 @@ def build_tree():
         U, V = grid(math.pi * rad, 2 * math.pi * rad)
         a, b = U * math.pi, V * 2 * math.pi
         n = np.stack([np.sin(a) * np.cos(b), np.cos(a), np.sin(a) * np.sin(b)], -1)
-        add(cen + rad * n, n, PALETTE[i % len(PALETTE)], "bauble", 1,
+        add(cen + rad * n, n, [(1.0, 0.12, 0.10), (0.88, 0.90, 0.96), (1.0, 0.12, 0.10), (1.0, 0.75, 0.20),
+                               (0.20, 0.45, 1.0)][i % 5], "bauble", 1,
             tap=7.6 + 1.5 * (y - 0.45) / 1.9 + rng.uniform(0, 0.8), cen=cen)
 
     # fairy lights twinkle on from the bottom up
@@ -164,7 +167,7 @@ def build_tree():
         warm = rng.uniform() < 0.6
         col = (1.0, 0.82, 0.45) if warm else PALETTE[int(rng.integers(0, len(PALETTE)))]
         add((d * (float(rcone(y)) + 0.03) + np.array([0, y, 0], F32))[None], d[None], col, "bulb", 3,
-            tap=9.0 + 1.6 * y / 2.6, ph=rng.uniform(0, 6.28))
+            tap=9.0 + 1.6 * y / 2.6, ph=th0)
 
     # gifts: wrapped boxes with a crossed ribbon and a bow, popping in around the base
     for i, (ang, rr, w, d, h, col, rib) in enumerate([
@@ -219,14 +222,18 @@ def tree_layer(cv, t, flash):
         r = float(rcone(np.array([bh], F32))[0])
         q = CAP_UV[:, 0] * r
         lump = 0.5 + 0.5 * np.sin(CAP_UV[:, 1] * 7 + q * 9) * np.sin(CAP_UV[:, 1] * 3 - q * 5 + 1.3)
-        capP = np.stack([q * np.cos(CAP_UV[:, 1]), bh + (0.10 * (1 - CAP_UV[:, 0] ** 2) + 0.06 * lump) * min(1.0, r * 3),
-                         q * np.sin(CAP_UV[:, 1])], 1).astype(F32)
+        capP = np.concatenate([                           # two stacked, broken layers of snow
+            np.stack([q * np.cos(CAP_UV[:, 1]), bh + 0.03 * lump + 0 * q, q * np.sin(CAP_UV[:, 1])], 1),
+            np.stack([0.72 * q * np.cos(CAP_UV[:, 1]), bh + 0.13 + 0.03 * lump, 0.72 * q * np.sin(CAP_UV[:, 1])], 1)]
+        ).astype(F32)
+        keep_ = np.concatenate([lump > 0.30, lump > 0.42])     # gaps in the snow
+        capP = capP[keep_]
     pop = kd[idx] == 1
     if pop.any():
         sc = backout((t - T["tap"][idx][pop]) / 0.35)
         cen = T["cen"][idx][pop]
         P[pop] = cen + (P[pop] - cen) * sc[:, None]
-    R = K.Ry(W0L * t)
+    R = K.Ry(TREE_YAW)
     ex = train_points(t)                                       # track + train don't turn
     if len(capP):
         n_ = len(capP)
@@ -251,23 +258,35 @@ def tree_layer(cv, t, flash):
     lit = base * ((0.22 + 0.85 * lam)[:, None] * np.array([0.75, 0.80, 1.0], F32)
                   + on * 0.25 * np.array([1.0, 0.75, 0.45], F32))
     shiny = mat == K.MID["bauble"]
-    if shiny.any():
-        lit[shiny] += (np.clip(n[shiny] @ HALF, 0, 1) ** 24 * 0.9)[:, None]
+    if shiny.any():                                            # glints slide as the lights move
+        sw = 0.7 * math.sin(W0L * 3 * t)
+        hl = np.array([math.sin(sw) * 0.6, 0.55, math.cos(sw)], F32)
+        lit[shiny] += (np.clip(n[shiny] @ (hl / np.linalg.norm(hl)), 0, 1) ** 24 * 1.1)[:, None]
     if flash is not None:
         lit += base * flash * 0.5
     if 0.0 < bh < TOP - 0.02:                                  # snow spilling over the rim, lumpy edge
         ang = np.arctan2(n[:, 2], n[:, 0])
-        depth = 0.10 + 0.08 * (0.5 + 0.5 * np.sin(ang * 9 + yy * 13)) + 0.05 * np.sin(ang * 23)
+        depth = 0.03 + 0.06 * (0.5 + 0.5 * np.sin(ang * 9 + yy * 13)) + 0.03 * np.sin(ang * 23)
         rim = (kk == 0) & (bh - yy < depth)
-        lit[rim], mat = np.array([0.90, 0.94, 1.0], F32), np.where(rim, K.MID["frost"], mat)
+        lit[rim], mat = np.array([0.80, 0.84, 0.90], F32), np.where(rim, K.MID["snowcap"], mat)
     capc = kk == 7
     if capc.any():
-        lit[capc] = base[capc] * (0.70 + 0.30 * np.clip(n[capc] @ LDIR, 0, 1))[:, None]
+        lit[capc] = base[capc] * (0.62 + 0.18 * np.clip(n[capc] @ LDIR, 0, 1))[:, None]
+        mat = np.where(capc, K.MID["snowcap"], mat)
     dens = np.clip(0.30 + 0.85 * lum(lit), 0.32, 1.0)
+    needles = (kk == 0) & (mat == K.MID["needle"])
+    dens[needles] = np.clip(0.62 + 0.7 * lum(lit[needles]), 0.6, 1.0)   # packed W%&$ needles
+    dens[capc | (mat == K.MID["snowcap"])] = 0.97
+    if t >= BUILD:                                             # a glittering wave rises up the tree
+        yw = TOP * 1.25 * ((t - BUILD) * 4 / LOOP % 1.0) - 0.15
+        band = np.exp(-((yy - yw) / 0.10) ** 2) * (kk == 0)
+        hit = band * (hash2(cells.astype(F32), 3.0, 5.0) > 0.55) > 0.35
+        lit[hit], dens[hit] = np.array([1.0, 1.0, 0.92], F32), 1.0
     bulbs = kk == 3
-    if bulbs.any():
-        tw = 0.55 + 0.45 * np.sin(W0L * 9 * t + ph[bulbs] * 3)
-        lit[bulbs] = base[bulbs] * (0.6 + 0.6 * tw)[:, None]
+    if bulbs.any():                                            # lights chase in spirals up the tree
+        wave = W0L * 8 * t - 2 * np.pi * (1.3 * yy[bulbs] / TOP + ph[bulbs] / (2 * np.pi))
+        tw = np.clip(np.cos(wave), 0, 1) ** 3
+        lit[bulbs] = base[bulbs] * (0.35 + 0.75 * tw)[:, None] + (0.35 * tw)[:, None]
         dens[bulbs] = 1.0
     fleck = (kk == 0) & (hash2(cells.astype(F32), 1.0, 2.0) > 0.93)  # white snow flecks in the needles
     lit[fleck] = np.array([0.80, 0.86, 0.95], F32)
@@ -528,7 +547,7 @@ def build_plaza():
 
     # two snowmen in the foreground
     parts = []
-    off = max(1.85 * KST, 0.40 * W)
+    off = min(max(1.85 * KST, 0.40 * W), 0.42 * W)
     for sx, face in ((KXT - off, 1), (KXT + off, -1)):
         su, sy = 0.052 * H, 0.985 * H
         r1, r2, r3 = su, 0.72 * su, 0.52 * su
@@ -636,7 +655,7 @@ def walker(t):
     """The snowman who waddles around the tree: angle, screen spot, size, depth (-1 back .. 1 front)."""
     phi = W0L * t + 0.8
     dz = math.sin(phi)
-    x = KXT + max(1.95 * KST, 0.34 * K.W) * math.cos(phi)
+    x = KXT + min(max(1.95 * KST, 0.34 * K.W), 0.40 * K.W) * math.cos(phi)
     y = KYT - 0.055 * K.H + 0.06 * K.H * dz
     return phi, x, y, 0.040 * K.H * (0.8 + 0.2 * dz), dz
 
@@ -677,59 +696,113 @@ def sleigh_path(t):
     """Santa circles the castle once per loop: across the sky in front, round the back."""
     psi = W0L * t + 2.2
     x = K.W / 2 + 0.62 * K.W * math.cos(psi)
-    y = HOR - 0.42 * CSU + 0.09 * K.H * math.sin(psi) + 0.02 * K.H * math.sin(3 * psi)
+    y = HOR - 0.40 * CSU - 0.085 * K.H * math.sin(psi) + 0.015 * K.H * math.sin(3 * psi)  # high in front, low behind
     return psi, x, y, math.sin(psi)
 
 
 def santa_sleigh(cv, t, flash, front):
-    """Sleigh, Santa and his sack, four galloping reindeer on golden reins, a sparkle trail."""
+    """Santa's sleigh: a curled red sleigh with gold filigree and runners, a sack spilling
+    gifts, Santa holding the reins (fur-trimmed coat, belt and buckle, beard, floppy hat),
+    and three reindeer at full gallop with antlers, harness collars and jingle bells,
+    trailing stardust."""
     psi, x, y, dz = sleigh_path(t)
     if (dz > 0) != front:
         return
     face = -1 if math.sin(psi) > 0 else 1                        # flying left in front, right behind
-    u = 0.030 * K.H * (0.85 + 0.25 * dz)
+    u = 0.036 * K.H * (0.80 + 0.25 * dz)
     tint = np.zeros(3, F32) if flash is None else flash * 0.3
-    k = np.arange(1, 16)                                         # glitter trail behind the sleigh
-    tx = [sleigh_path(t - 0.025 * i)[1:3] for i in k]
-    tw = np.sin(W0L * 31 * t + k * 2.1) > -0.2
-    br = (1 - k / 16) * tw
-    putcells(cv, np.array([p[0] for p in tx]), np.array([p[1] for p in tx]) + 0.3 * u,
-             0.3 + 0.6 * br, np.outer(br, [1.0, 0.85, 0.45]), "spark")
-    red, white, gold, skin = (0.88, 0.10, 0.10), (0.95, 0.95, 0.98), (1.0, 0.78, 0.30), (1.0, 0.78, 0.62)
-    brown, dark = (0.85, 0.58, 0.34), (0.55, 0.36, 0.20)
-    prims = [("ell", (0.9, -2.0, 0.95, 0.85), (0.35, 0.22, 0.12), 0.7, "gift"),          # sack
-             ("rect", (0.0, 3.2, -1.2, 0.0), red, 0.75, "train"),                        # sleigh body
-             ("rect", (-0.2, 0.7, -2.0, 0.0), red, 0.75, "train"),
-             ("rect", (0.0, 3.2, -1.25, -1.05), gold, 0.85, "gold"),
-             ("rect", (-0.4, 3.6, 0.35, 0.55), gold, 0.85, "gold"),                       # runner
-             ("tri", (3.4, 0.55, 4.0, -0.6, 3.7, 0.55), gold, 0.85, "gold"),
-             ("ell", (1.9, -1.6, 0.7, 0.75), red, 0.75, "train"),                         # Santa
-             ("ell", (2.3, -2.35, 0.42, 0.42), skin, 0.7, "snowman"),
-             ("ell", (2.45, -2.0, 0.42, 0.35), white, 0.7, "snowman"),                    # beard
-             ("tri", (1.85, -2.6, 2.75, -2.6, 2.0, -3.5), red, 0.75, "train"),            # hat
-             ("ell", (2.0, -3.5, 0.2, 0.2), white, 0.8, "snowman"),
-             ("rect", (1.8, 2.8, -2.72, -2.55), white, 0.8, "snowman")]
+    k = np.arange(1, 34)                                         # stardust trail
+    tx = [sleigh_path(t - 0.022 * i)[1:3] for i in k]
+    tw = np.sin(W0L * 31 * t + k * 2.1) > -0.3
+    br = (1 - k / 34) ** 0.8 * tw
+    jit = np.sin(k * 7.3 + W0L * 5 * t) * 0.6 * u
+    putcells(cv, np.array([p[0] for p in tx]), np.array([p[1] for p in tx]) + 0.2 * u + jit,
+             0.35 + 0.6 * br, np.outer(br, [1.0, 0.88, 0.50]), "spark")
+    red, white, gold, skin = (0.92, 0.10, 0.10), (0.97, 0.97, 1.0), (1.0, 0.80, 0.30), (1.0, 0.80, 0.66)
+    brown, tan, dark = (0.92, 0.58, 0.30), (1.0, 0.86, 0.66), (0.55, 0.32, 0.16)
+    sack, coal = (0.55, 0.36, 0.20), (0.08, 0.08, 0.10)
+    prims = [
+        # sack spilling gifts
+        ("ell", (0.6, -2.5, 0.95, 1.05), sack, 0.7, "gift"),
+        ("rect", (0.0, 0.65, -3.75, -3.15), (0.15, 0.60, 0.30), 0.8, "gift"),
+        ("rect", (0.27, 0.38, -3.75, -3.15), red, 0.85, "gift"),
+        ("rect", (0.75, 1.35, -3.55, -3.05), (0.25, 0.45, 1.0), 0.8, "gift"),
+        ("rect", (0.75, 1.35, -3.33, -3.25), gold, 0.85, "gold"),
+        ("ell", (0.6, -3.45, 0.18, 0.12), gold, 0.9, "gold"),
+        # sleigh body with a scroll curl at the front
+        ("rect", (-0.3, 0.9, -2.3, 0.0), red, 0.8, "train"),
+        ("rect", (0.0, 3.4, -1.3, 0.0), red, 0.8, "train"),
+        ("ell", (3.55, -0.95, 0.62, 0.62), red, 0.8, "train"),
+        ("ell", (3.55, -0.95, 0.30, 0.30), gold, 0.9, "gold"),
+        ("rect", (-0.3, 3.4, -1.38, -1.18), gold, 0.9, "gold"),
+        ("rect", (-0.38, -0.2, -2.35, 0.0), gold, 0.9, "gold"),
+    ] + [("ell", (xx, -0.62, 0.13, 0.13), gold, 0.9, "gold") for xx in (0.5, 1.2, 1.9, 2.6)] + [
+        # runners and struts
+        ("rect", (-0.6, 3.9, 0.42, 0.58), gold, 0.9, "gold"),
+        ("ell", (4.05, 0.12, 0.36, 0.36), gold, 0.9, "gold"),
+        ("ell", (4.05, 0.12, 0.16, 0.16), (0.10, 0.10, 0.20), 0.4, "gold"),
+        ("rect", (0.5, 0.65, 0.0, 0.45), gold, 0.9, "gold"),
+        ("rect", (2.6, 2.75, 0.0, 0.45), gold, 0.9, "gold"),
+        # Santa
+        ("ell", (2.05, -2.05, 0.85, 0.92), red, 0.8, "train"),
+        ("rect", (1.98, 2.18, -2.9, -1.2), white, 0.85, "snowman"),
+        ("rect", (1.2, 2.9, -1.78, -1.52), coal, 0.8, "coal"),
+        ("rect", (1.85, 2.3, -1.82, -1.48), gold, 0.95, "gold"),
+        ("tri", (2.3, -2.65, 2.55, -2.25, 3.5, -2.05), red, 0.8, "train"),       # arm out to the reins
+        ("tri", (2.3, -2.65, 3.5, -2.05, 3.45, -1.8), red, 0.8, "train"),
+        ("ell", (3.55, -1.95, 0.22, 0.22), white, 0.85, "snowman"),               # glove
+        ("ell", (2.45, -3.25, 0.46, 0.46), skin, 0.75, "snowman"),               # face
+        ("ell", (2.38, -2.78, 0.58, 0.48), white, 0.85, "snowman"),              # beard
+        ("ell", (2.7, -3.08, 0.28, 0.11), white, 0.9, "snowman"),                # moustache
+        ("ell", (2.68, -3.22, 0.12, 0.09), (1.0, 0.55, 0.55), 0.8, "snowman"),   # rosy cheek
+        ("ell", (2.62, -3.42, 0.07, 0.07), coal, 0.9, "coal"),                   # eye
+        ("tri", (1.95, -3.55, 2.9, -3.55, 1.45, -4.55), red, 0.8, "train"),      # floppy hat
+        ("rect", (1.9, 2.95, -3.72, -3.45), white, 0.9, "snowman"),
+        ("ell", (1.42, -4.55, 0.24, 0.24), white, 0.9, "snowman"),
+    ]
     gallop = W0L * 30 * t
-    for i in range(3):
-        bx, by = 5.0 + i * 2.3, -1.0 + 0.25 * math.sin(gallop + i * 1.3) - 0.3 * (i % 2)
-        prims += [("ell", (bx, by, 1.0, 0.42), brown, 0.7, "train"),
-                  ("ell", (bx + 0.95, by - 0.55, 0.28, 0.32), brown, 0.7, "train"),
-                  ("ell", (bx + 1.25, by - 0.75, 0.32, 0.22), brown, 0.7, "train"),
-                  ("ell", (bx - 0.95, by - 0.15, 0.22, 0.16), white, 0.7, "snowman")]
-        for lx_, ph in ((0.6, 0.0), (0.35, 1.6), (-0.45, 3.1), (-0.7, 4.7)):              # legs
-            sw = 0.45 * math.sin(gallop + ph + i)
-            prims.append(("tri", (bx + lx_ - 0.1, by + 0.2, bx + lx_ + 0.1, by + 0.2, bx + lx_ + sw, by + 1.25), dark, 0.7, "train"))
-        prims += [("tri", (bx + 0.8, by - 0.85, bx + 0.95, by - 0.85, bx + 0.55, by - 1.9), (0.85, 0.72, 0.50), 0.8, "gold"),
-                  ("tri", (bx + 1.0, by - 0.85, bx + 1.15, by - 0.85, bx + 1.4, by - 1.9), (0.85, 0.72, 0.50), 0.8, "gold")]
-    gx, gr = x + face * 6.0 * u, 7.5 * u                         # moonlit glow around the team
+    collars = []
+    for i in range(3):                                           # reindeer at full gallop
+        bx = 5.4 + i * 2.7
+        by = -1.15 + 0.22 * math.sin(gallop + i * 1.3) - 0.25 * (i % 2)
+        st = 0.5 + 0.5 * math.sin(gallop + i)                    # stretch of the stride
+        prims += [
+            ("ell", (bx, by, 1.05, 0.45), brown, 0.85, "train"),
+            ("ell", (bx + 0.05, by + 0.18, 0.75, 0.2), tan, 0.75, "train"),
+            ("tri", (bx + 0.55, by - 0.25, bx + 0.95, by - 0.35, bx + 1.25, by - 1.05), brown, 0.75, "train"),
+            ("ell", (bx + 1.35, by - 1.08, 0.33, 0.26), brown, 0.75, "train"),
+            ("ell", (bx + 1.72, by - 0.98, 0.21, 0.15), tan, 0.75, "train"),
+            ("ell", (bx + 1.9, by - 1.0, 0.07, 0.07), coal, 0.9, "coal"),
+            ("ell", (bx + 1.42, by - 1.16, 0.06, 0.06), coal, 0.9, "coal"),
+            ("tri", (bx + 1.1, by - 1.2, bx + 1.25, by - 1.25, bx + 0.85, by - 1.45), brown, 0.75, "train"),
+            ("ell", (bx - 1.02, by - 0.28, 0.2, 0.14), white, 0.85, "snowman"),
+            ("rect", (bx + 0.72, bx + 1.0, by - 0.62, by - 0.2), red, 0.85, "train"),     # harness collar
+        ]
+        for ax, sp in ((1.22, 1.0), (1.45, 0.8)):                # branching antlers
+            prims += [
+                ("tri", (bx + ax - 0.05, by - 1.25, bx + ax + 0.05, by - 1.25, bx + ax - 0.25 * sp, by - 2.15 * sp), tan, 0.85, "gold"),
+                ("tri", (bx + ax - 0.12 * sp, by - 1.65 * sp, bx + ax - 0.07 * sp, by - 1.62 * sp, bx + ax + 0.25 * sp, by - 2.0 * sp), tan, 0.85, "gold"),
+                ("tri", (bx + ax - 0.18 * sp, by - 1.9 * sp, bx + ax - 0.13 * sp, by - 1.88 * sp, bx + ax - 0.6 * sp, by - 2.2 * sp), tan, 0.85, "gold"),
+            ]
+        for lx_, fwd in ((0.65, 1), (0.40, 1), (-0.50, -1), (-0.75, -1)):   # legs flung fore and aft
+            ex_ = lx_ + fwd * (0.55 + 0.45 * st)
+            ey_ = 1.0 - 0.35 * st
+            prims += [("tri", (bx + lx_ - 0.1, by + 0.2, bx + lx_ + 0.1, by + 0.2, bx + ex_, by + ey_), dark, 0.75, "train"),
+                      ("ell", (bx + ex_, by + ey_, 0.09, 0.09), coal, 0.9, "coal")]
+        for j in range(3):                                       # jingle bells on the collar
+            prims.append(("ell", (bx + 0.78 + 0.1 * j, by - 0.16 + 0.05 * math.sin(gallop * 2 + j), 0.08, 0.08), gold, 0.95, "gold"))
+        collars.append((bx + 0.86, by - 0.4))
+    gx, gr = x + face * 6.5 * u, 8.5 * u                         # warm glow around the team
     rs, cs = window(gx - 2 * gr, gx + 2 * gr, y - 1.2 * gr, y + 0.8 * gr)
     sc = sub(cv, rs, cs)
-    g = 0.35 * np.exp(-(((K.X[rs, cs] - gx) / gr) ** 2 + ((K.Y[rs, cs] - y + 1.0 * u) / (0.45 * gr)) ** 2))
-    putmax(sc, g, np.array([0.75, 0.70, 0.95], F32) * g[..., None], "glow", 0.1)
+    g = 0.38 * np.exp(-(((K.X[rs, cs] - gx) / gr) ** 2 + ((K.Y[rs, cs] - y + 1.4 * u) / (0.5 * gr)) ** 2))
+    putmax(sc, g, np.array([0.95, 0.78, 0.55], F32) * g[..., None], "glow", 0.1)
     raster(cv, prims, x, y, u, face, tint)
-    k = np.linspace(0, 1, 30)                                    # golden reins
-    P = np.stack([x + face * (2.6 + k * 8.0) * u, y + (-1.9 + k * 0.6 + 0.3 * np.sin(k * 3.1)) * u], 1)
-    K.stroke(cv, P, 0.25 * K.CW, 0.45, (0.8, 0.62, 0.25), "gold")
+    hx, hy = 3.55, -1.95                                         # golden reins from Santa's hand
+    for cx_, cy_ in collars:
+        kk = np.linspace(0, 1, 24)
+        P = np.stack([x + face * (hx + (cx_ - hx) * kk) * u, y + (hy + (cy_ - hy) * kk + 0.35 * np.sin(kk * math.pi)) * u], 1)
+        K.stroke(cv, P, 0.25 * K.CW, 0.55, (1.0, 0.78, 0.30), "gold", True)
 
 
 PASTELS = [(0.85, 0.38, 0.50), (0.30, 0.68, 0.52), (0.92, 0.72, 0.32), (0.38, 0.52, 0.92),
@@ -905,12 +978,17 @@ def star_layer(cv, t):
     K.put(sc, inside, np.where(core, 1.0, 0.85), col, "star")
     g = 0.5 * np.exp(-(d / (1.6 * rs)) ** 2)
     putmax(sc, g, np.array([1.0, 0.85, 0.45], F32) * g[..., None], "glow", 0.12)
-    tw = 0.5 + 0.5 * math.sin(W0L * 12 * t)                    # twinkling cross rays
-    k = np.linspace(-2.6, 2.6, 40) * rs
-    br = (1 - np.abs(k) / (2.6 * rs)) * tw
-    xs = np.concatenate([sx + k, sx + 0 * k])
-    ys = np.concatenate([sy + 0 * k, sy + k * 0.8])
-    putcells(cv, xs, ys, 0.3 + 0.6 * np.tile(br, 2), np.outer(np.tile(br, 2), [1.0, 0.9, 0.6]), "spark")
+    k = np.linspace(-3.2, 3.2, 48) * rs                        # slowly turning, pulsing rays
+    xs, ys, brs = [], [], []
+    for j in range(4):
+        a = W0L * t + j * math.pi / 4
+        pulse = 0.55 + 0.45 * math.sin(W0L * 10 * t + j * 1.6)
+        L = 1.0 if j % 2 == 0 else 0.6
+        xs.append(sx + k * L * math.cos(a))
+        ys.append(sy + k * L * math.sin(a) * 0.8)
+        brs.append((1 - np.abs(k) / (3.2 * rs)) * pulse)
+    br = np.concatenate(brs)
+    putcells(cv, np.concatenate(xs), np.concatenate(ys), 0.3 + 0.6 * br, np.outer(br, [1.0, 0.9, 0.6]), "spark")
 
 
 # ------------------------------------------------------------ background ---
@@ -1105,7 +1183,7 @@ def setup(cols, rows, cw, ch):
     HOR = 0.62 * K.H
     CSU = min(0.95 * K.W, 1.15 * K.H)                           # castle unit (px)
     KXT, KYT = 0.5 * K.W, 0.93 * K.H
-    KST = min(0.19 * K.H, 0.31 * K.W)                           # tree scale (px per unit)
+    KST = min(0.21 * K.H, 0.31 * K.W)                           # tree scale (px per unit)
     SAMPT = 2.2 * KST / min(K.CW, K.CH)
     STREET_D = 0.40 * K.W                                       # street half-width at the near edge
     K.HOR, K.MX, K.MY, K.MR = HOR, -1e9, -1e9, 0.0              # rockets rise from the castle
@@ -1138,7 +1216,6 @@ def render(t):
         flash = K.firework_layer(cv, (t - BUILD) % SHOW, fresh=t < BUILD + SHOW)
     santa_sleigh(cv, t, flash, front=False)                    # behind the castle
     castle_layer(cv, t, flash)
-    santa_sleigh(cv, t, flash, front=True)
     ground_layer(cv, t, flash)
     mainstreet_layer(cv, t, flash)
     crowd_layer(cv, t, flash)
@@ -1151,6 +1228,7 @@ def render(t):
     walking_snowman(cv, t, flash, front=True)
     plaza_front(cv, t, flash)
     focus_pass(cv, t)
+    santa_sleigh(cv, t, flash, front=True)                     # in front: kept bright
     snow_layer(cv, t, near=True)
     return cv
 

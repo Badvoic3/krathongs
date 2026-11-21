@@ -20,8 +20,8 @@ Inspired by a Loy Krathong clip from the TikTok account *Python Hub*.
 | | Scene | Run it |
 |---|---|---|
 | <img src="media/preview.gif" width="220"> | **Loy Krathong**: the krathong on a moonlit river, lanterns, the dragon and the fireworks show. | `krathong_ascii.py` |
-| <img src="media/castle_preview.png" width="220"> | **Castle Christmas**: a spruce builds itself in front of a fairy-tale castle (a lumpy, snow-capped mound rising to a point), gets dressed with garland, baubles, lights, gifts and a star, then the fireworks loop forever. The plaza has a toy train circling the tree, a walking snowman, snowmen, lamp posts, lit shrubs, a Main Street of shopfronts with marquee bulbs and string lights, a crowd with Santa hats and balloons, and Santa's sleigh circling the castle. | `castle_tree.py` |
-| <img src="media/sunset_preview.png" width="220"> | **Sunset Sea**: the sun sinks into the sea under drifting clouds, with a lighthouse sweeping its beam, sailboats and gulls. The water mirrors the sky and every firework. | `sunset_sea.py` |
+| <img src="media/castle_preview.png" width="220"> | **Castle Christmas**: a spruce builds itself in front of a fairy-tale castle: a rising cut capped with stacked, broken rows of snow over dense two-tone needles, matched frame by frame to the reference clip. It then gets dressed with gold garland swags, baubles, lights, gifts and a star. The tree stands still; chasing spiral lights, a glittering wave rising up it, sliding glints on the baubles and a star with turning, pulsing rays keep it lively while the fireworks loop. The plaza has a toy train circling the tree, a walking snowman, snowmen, lamp posts, lit shrubs, a Main Street of shopfronts with marquee bulbs and string lights, a crowd with Santa hats and balloons, and Santa's sleigh (sack of gifts, reins, three galloping reindeer with antlers and bells) circling the castle. | `castle_tree.py` |
+| <img src="media/sunset_preview.png" width="220"> | **Sunset Sea**: a big striped sun on the horizon under a purple-to-gold sky, a golden road across the waves, surf rolling onto the beach, palm silhouettes framing the view, plus a lighthouse beam, sailboats and gulls. The water mirrors every firework. | `sunset_sea.py` |
 
 Running a scene plays it **live in your terminal**: no flags needed. The castle scene starts
 with the tree building itself, then the show loops every 20 s, with the tree in focus and the
@@ -97,9 +97,13 @@ This is the default. It runs the simulation in real time, so nothing is pre-rend
 - The scene fills whatever size the terminal is. A bigger window or a smaller font
   (Cmd/Ctrl + minus) gives more detail. Resizing while it runs works.
 - Press **Ctrl-C** to quit.
-- It's light on resources. Each frame is rendered once (about 7–12 ms) and only the
-  cells that changed are sent to the terminal. After the first 10 s loop, frames and
-  diffs replay from memory (capped at about 100 MB), so CPU use drops to almost nothing.
+- It's light on resources, even full screen. Only cells that visibly changed are sent
+  to the terminal (tiny colour shimmer is held back until it adds up), which keeps the
+  terminal app's own drawing (GPU) work low. The first pass of the loop is rendered
+  live; after that the compressed frame diffs replay from memory (about 10–25 MB), so
+  CPU use drops to about 2% of one core.
+- The frame rate adapts to the terminal size: 30 fps normally, 24 or 20 in very large
+  terminals. Use `--fps N` to choose.
 - If colours look wrong, your terminal lacks 24-bit colour. Try iTerm2 or Windows Terminal.
 
 ### 4. Render a video
@@ -125,7 +129,7 @@ be uploaded straight to TikTok, Reels or Shorts.
 | Flag | Default | Meaning |
 |---|---|---|
 | `--out PATH` | `krathong.mp4` | output file (`.png` with `--png`) |
-| `--fps N` | `30` | frames per second; the loop is always 10 s |
+| `--fps N` | `30` video / auto live | frames per second (live picks 30, 24 or 20 by terminal size) |
 | `--cols N` / `--rows N` | `108` / `84` | character grid size |
 | `--cw PX` / `--ch PX` | `10` / `16` | size of one character cell in pixels |
 | `--showcase` | off | add the editor-style code panel underneath (adds 576 px of height) |

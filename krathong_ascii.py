@@ -1331,32 +1331,39 @@ def terminal_cells(cv):
     for dy in range(1, 5):
         glow = glow + hsum[dy:dy + ROWS]
     glow = glow / 45
-    fg = ((np.clip(cv[1] * 1.25 + glow * 0.5, 0, 1) * 31).astype(np.uint8) * 8)
-    bg = ((np.clip(glow * 0.45, 0, 1) * 31).astype(np.uint8) * 8)
+    fg = (np.clip(cv[1] * 1.25 + glow * 0.5, 0, 1) * 31).astype(np.int16) * 8
+    bg = (np.clip(glow * 0.45, 0, 1) * 31).astype(np.int16) * 8
     return glyph_index(cv).astype(np.uint8), fg, bg
 
 
 class AnsiScreen:
-    """Truecolor output that sends only the cells that changed since the last frame.
+    """Truecolor output that sends only what visibly changed since the last frame.
 
+    A cell is resent when its glyph changes, or when its colour has drifted at least
+    TOL from what is currently on screen (tiny shimmer is held back until it adds up,
+    which is what keeps a busy full-screen scene cheap for the terminal to draw).
     Colour codes are emitted only when they change, a space's foreground is never
-    sent (it can't be seen), and short unchanged gaps are rewritten rather than
-    jumped over, since a cursor move costs more bytes than a few cells.
+    sent, and short unchanged gaps are rewritten rather than jumped over.
     """
+    TOL = 24                                          # 3 of the 32 colour steps
 
     def __init__(self):
-        self.prev = None
+        self.shown = None
         self.chars = np.array(CHARS)
         self.space = CHARS.index(" ")
 
+    def reset(self):
+        self.shown = None
+
     def frame(self, gi, fg, bg):
-        if self.prev is None:
+        if self.shown is None:
             changed = np.ones(gi.shape, bool)
+            self.shown = (gi.copy(), fg.astype(np.int16), bg.astype(np.int16))
         else:
-            pg, pf, pb = self.prev
-            changed = ((gi != pg) | (bg != pb).any(-1)
-                       | ((gi != self.space) & (fg != pf).any(-1)))
-        self.prev = (gi, fg, bg)
+            sg, sf, sb = self.shown
+            changed = ((gi != sg) | (np.abs(bg - sb).max(-1) >= self.TOL)
+                       | ((gi != self.space) & (np.abs(fg - sf).max(-1) >= self.TOL)))
+            sg[changed], sf[changed], sb[changed] = gi[changed], fg[changed], bg[changed]
         out, cur_f, cur_b, pos = [], None, None, None
         for r in np.flatnonzero(changed.any(1)).tolist():
             cols = np.flatnonzero(changed[r])
@@ -1386,50 +1393,59 @@ def to_ansi(cv):
     return "\x1b[H" + AnsiScreen().frame(*terminal_cells(cv)) + "\x1b[0m"
 
 
+def live_fps(cells):
+    """Frame rate for live playback: big full-screen terminals get a calmer rate so the
+    terminal app (which does the actual drawing, on the GPU) can keep up."""
+    return 30 if cells <= 20000 else 24 if cells <= 40000 else 20
+
+
 def play_terminal(args, scene):
-    """Live loop. Time snaps to the frame grid, so the loop repeats exactly: each frame
-    is rendered once, and each frame-to-frame diff is encoded once, then both are
-    replayed from memory (within a budget) on every later pass of the loop. A scene
-    with an intro plays it once, uncached, before looping."""
+    """Live loop. Frames advance one at a time (never skipped), so the loop is always
+    played in the same order: the first pass renders and encodes each frame, then every
+    later pass replays the compressed frame-to-frame diffs from memory - almost no CPU.
+    Each loop starts with a full repaint, so a disturbed screen heals. A scene with an
+    intro (the castle's tree build) plays it once, live, before the loop starts."""
+    import zlib
     out = sys.stdout
     out.write("\x1b[?25l\x1b[2J")
-    frames = int(round(scene.loop * args.fps))
-    budget = 100e6                                   # bytes of cached cells + diffs
-    size, t0 = None, time.time()
+    budget = 120e6                                    # compressed diff cache, bytes
+    size = None
     try:
         while True:
             ts = shutil.get_terminal_size()
             if (ts.columns, ts.lines) != size:
                 size = (ts.columns, ts.lines)
                 scene.setup(ts.columns, ts.lines - 1, 8, 16)
-                screen, cells_cache, diff_cache, used, prev_n = AnsiScreen(), {}, {}, 0, None
+                fps = args.fps or live_fps(COLS * ROWS)
+                intro, frames = int(round(scene.intro * fps)), int(round(scene.loop * fps))
+                screen, cache, used, caching, i = AnsiScreen(), {}, 0, True, 0
+                deadline = time.perf_counter()
                 out.write("\x1b[0m\x1b[2J")
-            start = time.time()
-            if start - t0 < scene.intro:               # intro: render live, no caching
-                screen_t = int((start - t0) * args.fps) / args.fps
-                out.write(screen.frame(*terminal_cells(scene.render(screen_t))))
-                out.flush()
-                time.sleep(max(0.0, (int((start - t0) * args.fps) + 1) / args.fps - (time.time() - t0)))
-                continue
-            n = int((start - t0 - scene.intro) * args.fps) % frames
-            if prev_n is not None and n < prev_n:      # once per loop: full repaint,
-                screen.prev, prev_n = None, None       # so a disturbed screen heals
-            cells = cells_cache.get(n)
-            if cells is None:
-                cells = terminal_cells(scene.render(scene.intro + n / args.fps))
-                if used + COLS * ROWS * 7 <= budget:
-                    cells_cache[n], used = cells, used + COLS * ROWS * 7
-            diff = diff_cache.get((prev_n, n))
-            if diff is None:
-                diff = screen.frame(*cells)
-                if prev_n is not None and used + len(diff) <= budget:
-                    diff_cache[(prev_n, n)], used = diff, used + len(diff)
+            if i < intro:
+                diff = screen.frame(*terminal_cells(scene.render(i / fps)))
             else:
-                screen.prev = cells
-            prev_n = n
+                n = (i - intro) % frames
+                if n == 0:
+                    screen.reset()
+                    out.write("\x1b[0m")
+                if len(cache) == frames:
+                    diff = zlib.decompress(cache[n]).decode()
+                else:
+                    diff = screen.frame(*terminal_cells(scene.render((intro + n) / fps)))
+                    if caching:
+                        z = zlib.compress(diff.encode(), 1)
+                        cache[n], used = z, used + len(z)
+                        if used > budget:              # too big to keep: render live instead
+                            cache, caching = {}, False
             out.write(diff)
             out.flush()
-            time.sleep(max(0.0, (int((start - t0) * args.fps) + 1) / args.fps - (time.time() - t0)))
+            i += 1
+            deadline += 1 / fps
+            now = time.perf_counter()
+            if deadline > now:
+                time.sleep(deadline - now)
+            elif now - deadline > 0.25:               # running behind: don't try to catch up
+                deadline = now
     except KeyboardInterrupt:
         pass
     finally:
@@ -1440,7 +1456,7 @@ def main(scene=None):
     scene = scene or KRATHONG
     ap = argparse.ArgumentParser(description=scene.title)
     ap.add_argument("--out", default=None, help=f"output file (default {scene.out})")
-    ap.add_argument("--fps", type=int, default=30)
+    ap.add_argument("--fps", type=int, default=None, help="frames per second (video 30; live picks 20-30 by size)")
     ap.add_argument("--cols", type=int, default=108)
     ap.add_argument("--rows", type=int, default=84)
     ap.add_argument("--cw", type=int, default=10, help="char cell width in px")
@@ -1454,11 +1470,14 @@ def main(scene=None):
     if scene is KRATHONG:
         ap.add_argument("--no-dragon", action="store_true", help="leave the dragon out")
     args = ap.parse_args()
+    live = args.png is None and (args.term or not (args.video or args.showcase or (args.out or "").endswith(".mp4")))
+    if args.fps is None and not live:
+        args.fps = 30
     global FIREWORKS_ON, DRAGON_ON
     FIREWORKS_ON, DRAGON_ON = not args.no_fireworks, not getattr(args, "no_dragon", False)
     if args.png is not None:
         render_png(args, scene)
-    elif not args.term and (args.video or args.showcase or (args.out or "").endswith(".mp4")):
+    elif not live:
         render_video(args, scene)
     else:
         play_terminal(args, scene)
