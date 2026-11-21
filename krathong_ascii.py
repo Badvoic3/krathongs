@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -64,9 +65,19 @@ RAMPS = {                        # glyphs from faint to dense, per material
 MID = {name: i for i, name in enumerate(RAMPS)}
 LV = 24                          # density levels per ramp
 FIREWORKS_ON = True
-CHARS = sorted({c for r in RAMPS.values() for c in r})
-LUT = np.array([[CHARS.index(r[min(len(r) - 1, int(l / LV * len(r)))])
-                 for l in range(LV)] for r in RAMPS.values()])
+
+
+def register_ramps(new=None):
+    """Add materials (name -> glyph ramp) and rebuild the glyph tables."""
+    global MID, CHARS, LUT
+    RAMPS.update(new or {})
+    MID = {name: i for i, name in enumerate(RAMPS)}
+    CHARS = sorted({c for r in RAMPS.values() for c in r})
+    LUT = np.array([[CHARS.index(r[min(len(r) - 1, int(l / LV * len(r)))])
+                     for l in range(LV)] for r in RAMPS.values()])
+
+
+register_ramps()
 
 
 # ----------------------------------------------------------------- helpers ---
@@ -377,7 +388,7 @@ def anchors(t):
 # ------------------------------------------------------------------ scene ---
 def build_scene():
     """Static masks: temple silhouettes + lantern / spark / firefly seeds."""
-    global TEMPLE, EDGE, WINDOWS, WIN_H, LANTERNS, SPARKS, MOTES, FIREWORKS
+    global TEMPLE, EDGE, WINDOWS, WIN_H, LANTERNS, SPARKS, MOTES
     x, y = X / W, (HOR - Y) / H                  # y = height above the horizon
     m = (y >= 0) & (y < 0.012 + 0.004 * np.sin(x * 40))        # far bank
     cx, hw = 0.20, 0.17                                          # ordination hall
@@ -412,24 +423,7 @@ def build_scene():
                   a=rng.uniform(1, 4, 36), dr=rng.uniform(-70, 70, 36), rise=rng.uniform(160, 380, 36))
     MOTES = dict(x=rng.uniform(0.03, 0.97, 50), y=rng.uniform(HOR / H - 0.15, 0.98, 50),
                  p=rng.uniform(0, 6.28, (3, 50)), k=rng.integers(1, 4, (3, 50)))
-    FIREWORKS = []
-    for i in range(FW_COUNT):                        # evenly spaced shells, varied looks
-        style = ["peony", "ring", "willow", "peony", "ring", "peony"][i % 6]
-        k = 120 if style == "willow" else 96
-        c1, c2 = FW_COLOURS[i % len(FW_COLOURS)]
-        r = rng.uniform(170, 240)
-        while True:                                  # keep bursts clear of the moon
-            x, y = rng.uniform(0.15, 0.85), rng.uniform(0.12, 0.28)
-            if math.hypot(x * W - MX, y * H - MY) > r * S + MR * 1.2:
-                break
-        FIREWORKS.append(dict(
-            t0=i * LOOP / FW_COUNT + rng.uniform(-0.25, 0.25), x=x, y=y, r=r,
-            c1=c1, c2=c2, style=style,
-            ang=rng.uniform(0, 2 * math.pi, k),
-            spd=np.full(k, 1.0) + rng.normal(0, 0.03, k) if style == "ring" else rng.uniform(0.35, 1.0, k) ** 0.5,
-            ph=rng.uniform(0, 6.28, k), g=110.0 if style == "willow" else 45.0,
-            life=3.0 if style == "willow" else FW_LIFE))
-
+    build_show()
 
 def build_static():
     """Everything that depends only on the grid, computed once per size, not per frame."""
@@ -509,48 +503,297 @@ def lantern_layer(cv, t):
         putmax(sc, g, np.array([1.0, 0.55, 0.18], F32) * g[..., None], "glow")
 
 
-FW_COUNT, FW_RISE, FW_LIFE = 6, 0.9, 2.3
-FW_COLOURS = [((1.0, 0.80, 0.35), (1.0, 0.45, 0.10)), ((1.0, 0.30, 0.30), (1.0, 0.75, 0.55)),
-              ((0.40, 1.0, 0.65), (0.20, 0.70, 1.0)), ((1.0, 0.85, 0.55), (0.9, 0.55, 0.15)),
-              ((1.0, 0.45, 0.90), (0.65, 0.50, 1.0)), ((0.35, 0.85, 1.0), (0.95, 0.95, 1.0))]
+FW_RISE = 0.85
+PAL = dict(gold=(1.0, 0.78, 0.30), amber=(1.0, 0.55, 0.12), pink=(1.0, 0.42, 0.78),
+           rose=(1.0, 0.25, 0.42), cyan=(0.35, 0.90, 1.0), blue=(0.40, 0.55, 1.0),
+           violet=(0.72, 0.45, 1.0), green=(0.40, 1.0, 0.55), white=(1.0, 0.97, 0.92),
+           silver=(0.82, 0.88, 1.0), red=(1.0, 0.22, 0.18))
 
 
-def firework_layer(cv, t):
-    """Shells rise from behind the temples, burst, sag under gravity and fade."""
+def shape_dirs(kind, n, rng):
+    """Unit burst directions (screen x, y-down) and speeds for each star in a shell."""
+    if kind == "heart":
+        th = np.linspace(0, 2 * np.pi, n, endpoint=False)
+        x = 16 * np.sin(th) ** 3
+        y = -(13 * np.cos(th) - 5 * np.cos(2 * th) - 2 * np.cos(3 * th) - np.cos(4 * th))
+        return np.stack([x, y + 2.5], 1) / 17, np.ones(n)
+    if kind == "star":
+        k = np.arange(11)
+        rad = np.where(k % 2 == 0, 1.0, 0.42)
+        ang = -np.pi / 2 + k * np.pi / 5
+        V = np.stack([rad * np.cos(ang), rad * np.sin(ang)], 1)
+        u = np.linspace(0, 10, n, endpoint=False)
+        i = u.astype(int)
+        f = (u - i)[:, None]
+        return V[i] * (1 - f) + V[i + 1] * f, np.ones(n)
+    if kind == "butterfly":
+        th = np.linspace(0, 2 * np.pi, n, endpoint=False)
+        r = np.exp(np.sin(th)) - 2 * np.cos(4 * th)
+        x, y = np.sin(th) * r, -np.cos(th) * r
+        return np.stack([x, y + 0.6], 1) / 3.2, np.ones(n)
+    if kind == "saturn":                                      # planet + tilted ring
+        h = n // 2
+        ang = rng.uniform(0, 2 * np.pi, n)
+        d = np.stack([np.cos(ang), np.sin(ang)], 1)
+        spd = np.sqrt(1 - rng.uniform(-1, 1, n) ** 2) * 0.55
+        ring = np.stack([np.cos(ang[h:]), 0.28 * np.sin(ang[h:])], 1)
+        c, s_ = math.cos(-0.35), math.sin(-0.35)
+        d[h:] = ring @ np.array([[c, s_], [-s_, c]])
+        spd[h:] = 1.15
+        return d, spd
+    if kind == "horsetail":                                   # thrown upward, falls heavily
+        ang = -np.pi / 2 + rng.uniform(-0.75, 0.75, n)
+        return np.stack([np.cos(ang), np.sin(ang)], 1), rng.uniform(0.5, 1.0, n)
+    ang = rng.uniform(0, 2 * np.pi, n)
+    d = np.stack([np.cos(ang), np.sin(ang)], 1)
+    if kind in ("ring", "palm"):
+        return d, 1 + rng.normal(0, 0.025, n)
+    return d, np.sqrt(1 - rng.uniform(-1, 1, n) ** 2)         # sphere seen side-on
+
+
+def build_show():
+    """A choreographed 10 s show: mirrored pairs, comet fans, shapes, willows, finale."""
+    global SHOW
+    rng = np.random.default_rng(11)
+    SHOW = []
+
+    def clear_of_moon(x, y, r):                        # keep burst centres off the moon
+        px, py = x * W, y * H
+        while math.hypot(px - MX, py - MY) < MR * 1.3 and py < HOR - 0.15 * H:
+            py += 0.01 * H
+        return x, py / H
+
+    def shell(t0, kind, x, y, r, c1, c2=None, n=90, life=2.2, g=40.0, change=None, glitter=False,
+              strobe=False, crackle=False, trail=(5, 0.05), inner=None, wiggle=False, fat=False, multi=False):
+        t0 = max(0.0, t0 + rng.uniform(-0.07, 0.07))        # a little human timing slop
+        x, y = x + rng.normal(0, 0.012), y + rng.normal(0, 0.008)
+        x, y = clear_of_moon(x, y, r)
+        d, spd = shape_dirs(kind, n, rng)
+        cols = np.tile(np.array(PAL[c1], F32), (n, 1))
+        if inner:                                          # pistil / ring inside a ring
+            half = np.arange(n) % 2 == 1
+            spd = np.where(half, spd * 0.5, spd)
+            cols[half] = PAL[inner]
+        if kind == "saturn":                               # the ring in its own colour
+            cols[n // 2:] = PAL[c2 or "gold"]
+            c2 = None
+        if multi:                                          # dahlia: every star its own colour
+            cols = np.array([PAL[k] for k in rng.choice(list(PAL), n)], F32)
+        SHOW.append(dict(t0=t0, kind=kind, x=x, y=y, r=r, cols=cols, c2=np.array(PAL[c2 or c1], F32),
+                         change=change, life=life, g=g, glitter=glitter, strobe=strobe,
+                         crackle=crackle, trail=trail, d=d, spd=spd, ph=rng.uniform(0, 6.28, n),
+                         cx=rng.normal(0, 1, (n, 3, 2)), wiggle=wiggle, fat=fat,
+                         multi=multi))
+
+    SWAP = {"chrys": ["peony", "dahlia", "chrys"], "peony": ["chrys", "dahlia", "peony"],
+            "dahlia": ["peony", "chrys"], "ring": ["ring", "chrys"], "willow": ["willow", "kamuro"]}
+    PARTNER = {"pink": ["cyan", "violet", "gold"], "rose": ["pink", "red"], "violet": ["blue", "pink", "cyan"],
+               "green": ["cyan", "gold"], "gold": ["amber", "white"], "amber": ["gold"], "cyan": ["blue", "green", "violet"],
+               "silver": ["white", "cyan"], "red": ["rose", "gold"]}
+
+    def pair(t0, kind, x, y, r, c1, **kw):                 # two shells, loosely balanced, never twins
+        x = max(x, 1 - x)
+        sides = [(1 - x, 0.0), (x, rng.uniform(0.15, 0.45))]
+        if rng.uniform() < 0.5:
+            sides = [(sides[0][0], sides[1][1]), (sides[1][0], 0.0)]
+        for i, (sx, dt) in enumerate(sides):
+            kk, cc, kw2 = kind, c1, dict(kw)
+            if i == 1:
+                cc = str(rng.choice(PARTNER.get(c1, [c1])))
+                if kind in SWAP and rng.uniform() < 0.6:
+                    kk = str(rng.choice(SWAP[kind]))
+                if "c2" in kw2 and rng.uniform() < 0.5:
+                    kw2["c2"] = str(rng.choice(PARTNER.get(kw2["c2"], [kw2["c2"]])))
+                kw2.pop("multi", None) if kk != "dahlia" else kw2.setdefault("multi", True)
+            shell(t0 + dt, kk, sx + rng.normal(0, 0.035), y + rng.normal(0, 0.03), r * rng.uniform(0.82, 1.12),
+                  cc, **kw2)
+
+    def fan(t0, x0, angles, c, speed, stagger=0.07, strobe=False):
+        for i, a in enumerate(angles):
+            SHOW.append(dict(t0=t0 + i * stagger, kind="comet", x0=x0, ang=math.radians(a),
+                             v=speed, col=np.array(PAL[c], F32), life=1.7, strobe=strobe,
+                             ph=float(rng.uniform(0, 6.28))))
+
+    def fountain(t0, x0, dur, c, n=36):                    # ground gerb spraying sparks upward
+        SHOW.append(dict(t0=t0, kind="fountain", x0=x0, dur=dur, col=np.array(PAL[c], F32), n=n,
+                         ang=rng.uniform(-0.28, 0.28, n), v=rng.uniform(380, 540, n), ph=rng.uniform(0, 1, n)))
+
+    def mine(t0, x0, colours, n=30):                       # a fan of stars fired from the ground
+        SHOW.append(dict(t0=t0, kind="mine", x0=x0, life=1.5, ang=rng.uniform(-0.6, 0.6, n),
+                         v=rng.uniform(600, 950, n), cols=np.array([PAL[c] for c in rng.choice(colours, n)], F32),
+                         ph=rng.uniform(0, 6.28, n)))
+
+    # opening: comet fans sweep in from both sides over a row of silver fountains
+    fan(0.00, 0.05, [22, 30, 38, 46, 54], "gold", 820)
+    fan(0.22, 0.95, [-26, -36, -46, -56], "amber", 780, stagger=0.09)
+    for x, dt in ((0.30, 0.0), (0.41, 0.18), (0.58, 0.07), (0.71, 0.3)):
+        fountain(dt, x, 2.0, "silver")
+    pair(0.55, "chrys", 0.27, 0.22, 150, "pink", c2="cyan", change=0.45, glitter=True, inner="gold")
+    shell(1.05, "palm", 0.50, 0.12, 200, "gold", n=14, life=2.6, g=110, trail=(12, 0.05), glitter=True, fat=True)
+    pair(1.60, "crossette", 0.20, 0.15, 140, "gold", n=32, trail=(4, 0.05), glitter=True)
+    # shapes: hearts, a ringed planet, a star, rings in rings, butterflies
+    pair(2.20, "heart", 0.30, 0.20, 125, "rose", n=72, life=2.0, g=10, trail=(3, 0.05))
+    shell(2.75, "saturn", 0.50, 0.17, 150, "blue", c2="gold", n=110, life=2.0, g=10, trail=(3, 0.05))
+    shell(3.30, "star", 0.50, 0.14, 150, "gold", c2="white", change=0.6, n=90, life=2.0, g=8,
+          trail=(3, 0.05), glitter=True)
+    pair(3.70, "ring", 0.22, 0.26, 125, "violet", inner="cyan", n=80, life=1.9)
+    pair(4.15, "butterfly", 0.30, 0.15, 130, "pink", c2="violet", change=0.5, n=110, life=2.0, g=8,
+         trail=(3, 0.05))
+    # comets from the centre, swimming fish, many-coloured dahlias, then the gold willows
+    fan(4.50, 0.50, [-48, -32, -16, 0, 16, 32, 48], "silver", 900, stagger=0.05, strobe=True)
+    pair(4.95, "fish", 0.38, 0.24, 120, "silver", n=60, life=1.6, glitter=True, wiggle=True)
+    pair(5.30, "dahlia", 0.18, 0.17, 140, "red", n=30, life=2.2, trail=(7, 0.06), multi=True)
+    willow = dict(c2="gold", change=0.3, n=110, life=3.2, g=95, trail=(9, 0.07), glitter=True, crackle=True)
+    pair(5.65, "willow", 0.29, 0.13, 190, "amber", **willow)
+    shell(5.85, "kamuro", 0.50, 0.10, 210, "gold", c2="white", change=0.75, n=160, life=3.4, g=70,
+          trail=(10, 0.07), glitter=True, crackle=True)
+    mine(6.60, 0.24, ["cyan", "green", "gold"])
+    mine(6.85, 0.79, ["pink", "violet", "gold"])
+    # finale: rapid alternating volley, horsetails, then one big chrysanthemum with crackle
+    xs = [0.20, 0.80, 0.34, 0.66, 0.26, 0.74, 0.42, 0.58, 0.14, 0.86]
+    cs = ["red", "cyan", "violet", "green", "pink", "blue", "gold", "rose", "white", "violet"]
+    for i, (x, c) in enumerate(zip(xs, cs)):
+        shell(7.00 + i * 0.15, "peony" if i % 3 else "chrys", x, 0.16 + 0.1 * rng.uniform(), 115,
+              c, n=70, life=1.8, strobe=i % 2 == 0, glitter=i % 2 == 1, inner="white" if i % 4 == 1 else None)
+    pair(7.90, "horsetail", 0.30, 0.12, 170, "gold", n=50, life=2.4, g=150, trail=(9, 0.06), glitter=True)
+    shell(8.35, "chrys", 0.50, 0.14, 240, "white", c2="gold", change=0.35, n=150, life=2.6,
+          glitter=True, crackle=True)
+    pair(8.45, "ring", 0.30, 0.20, 140, "cyan", inner="pink", n=90, life=2.2)
+
+
+def firework_layer(cv, t, fresh=False):
+    """Disney-style show: shells, comets, shapes, glitter, strobes, crackle, flashes.
+
+    fresh=True is the very first pass of a show: shells not launched yet are skipped
+    instead of showing the previous pass's tail sparks."""
     flash = np.zeros(3, F32)
-    for fw in FIREWORKS:
+    PX, PY, PD, PC = [], [], [], []                       # every lit point this frame
+
+    def add(x, y, br, col):
+        PX.append(x)
+        PY.append(y)
+        PD.append(np.clip(0.32 + 0.6 * br, 0, 1))
+        PC.append(np.asarray(col, F32) * br[:, None])
+
+    for fw in SHOW:
         a = (t - fw["t0"]) % LOOP
+        if fresh and t < fw["t0"]:
+            continue
+        if fw["kind"] == "comet":                         # rising comet with glitter tail
+            if a >= fw["life"]:
+                continue
+            fade = min(1.0, (fw["life"] - a) / 0.5)
+            i = np.arange(16)
+            k = np.maximum(a - i * 0.025, 0)
+            v = fw["v"] * S
+            x = fw["x0"] * W + v * math.sin(fw["ang"]) * k
+            y = HOR - v * math.cos(fw["ang"]) * k + 0.5 * 520 * S * k * k
+            tw = np.sin(W0 * 47 * t + i * 1.7 + fw["ph"]) > (0.0 if fw["strobe"] else -0.4)
+            br = 1.4 * np.linspace(1.0, 0.15, 16) * fade * (a > i * 0.025) * np.where(i < 2, 1, tw)
+            add(x, y, br, np.tile(fw["col"] * 0.7 + 0.3, (16, 1)))
+            add(x[:1] + CW * 0.6, y[:1], br[:1], (fw["col"] * 0.7 + 0.3)[None])   # fat head
+            continue
+
+        if fw["kind"] == "fountain":                       # gerbs: sparks relaunch every 0.9 s
+            if a > fw["dur"] + 1.0:
+                continue
+            T = 0.9
+            age = (a + fw["ph"] * T) % T
+            ok = (a - age >= 0) & (a - age <= fw["dur"])
+            for j in range(3):
+                k = np.maximum(age - j * 0.03, 0)
+                v = fw["v"] * S
+                x = fw["x0"] * W + v * np.sin(fw["ang"]) * k
+                y = HOR - v * np.cos(fw["ang"]) * k + 0.5 * 420 * S * k * k
+                tw = np.sin(W0 * 43 * t + fw["ph"] * 40 + j) > -0.3
+                add(x, y, (1 - age / T) * ok * (1 - j / 3) * tw, np.tile(fw["col"], (len(x), 1)))
+            flash += fw["col"] * 0.05
+            continue
+        if fw["kind"] == "mine":                           # stars fired from the ground in a fan
+            if a >= fw["life"]:
+                continue
+            for j in range(6):
+                k = max(a - j * 0.03, 0.0)
+                v = fw["v"] * S
+                x = fw["x0"] * W + v * np.sin(fw["ang"]) * k
+                y = HOR - v * np.cos(fw["ang"]) * k + 0.5 * 520 * S * k * k
+                br = np.full(len(x), (1 - a / fw["life"]) ** 1.2 * (1 - j / 6))
+                if j:
+                    br = br * (np.sin(W0 * 41 * t + fw["ph"] * 13 + j) > -0.2)
+                add(x, y, br, fw["cols"])
+            continue
+
         cx, cy, R = fw["x"] * W, fw["y"] * H, fw["r"] * S
-        c1, c2 = np.array(fw["c1"], F32), np.array(fw["c2"], F32)
-        if a < FW_RISE:                                          # rocket + short trail
+        if a < FW_RISE:                                   # rocket + short glittery trail
             e = np.maximum(a - np.arange(7) * 0.035, 0) / FW_RISE
             e = 1 - (1 - e) ** 2
             x = cx + 6 * S * np.sin(e * 9 + fw["t0"]) * (1 - e)
             y = HOR + (cy - HOR) * e
             b = np.linspace(1, 0.15, 7) * (a > np.arange(7) * 0.035)
-            putcells(cv, x, y, np.where(b > 0, 0.35 + 0.6 * b, 0), np.outer(b, [1.0, 0.75, 0.40]), "spark")
+            add(x, y, b, np.tile([1.0, 0.75, 0.40], (7, 1)))
             continue
         b = a - FW_RISE
         life = b / fw["life"]
         if life >= 1:
             continue
-        f = math.exp(-b * 5)                                     # burst flash
-        flash += c1 * f
-        rs, cs = window(cx - 5.2 * R, cx + 5.2 * R, cy - 5.2 * R, cy + 5.2 * R)  # flash < 1e-5 beyond
-        Xs, Ys = X[rs, cs], Y[rs, cs]
-        dd = np.hypot(Xs - cx, Ys - cy) / (R * 1.6)
-        sky = Ys < HOR
-        cv[1][rs, cs][sky] += (np.exp(-dd ** 2) * f * 0.35)[sky][:, None] * c1
-        tw = np.where(life > 0.55, np.sin(W0 * 37 * t + fw["ph"]) > -0.2, True)
-        col = c1 * (1 - life) + c2 * life + 0.6 * f
-        for j in range(5):                                       # head + streak
-            bb = max(b - j * 0.05, 0.0)
+        f = math.exp(-b * 6) * fw["r"] / 170                    # burst flash
+        flash += fw["cols"][0] * f
+        if f > 0.02:
+            rs, cs = window(cx - 5.2 * R, cx + 5.2 * R, cy - 5.2 * R, cy + 5.2 * R)
+            Xs, Ys = X[rs, cs], Y[rs, cs]
+            dd = np.hypot(Xs - cx, Ys - cy) / (R * 1.6)
+            sky = Ys < HOR
+            cv[1][rs, cs][sky] += (np.exp(-dd ** 2) * f * 0.35)[sky][:, None] * fw["cols"][0]
+
+        late = fw["change"] is not None and life >= fw["change"]   # colour-changing stars
+        base = np.broadcast_to(fw["c2"], fw["cols"].shape) if late else fw["cols"]
+        base = base + 0.6 * math.exp(-b * 5)                       # white-hot at the burst
+        n_tr, dt = fw["trail"]
+        for j in range(n_tr):
+            bb = max(b - j * dt, 0.0)
             dist = R * fw["spd"] * (1 - math.exp(-2.8 * bb))
-            x = cx + np.cos(fw["ang"]) * dist
-            y = cy + np.sin(fw["ang"]) * dist * 0.92 + fw["g"] * S * bb * bb
-            br = (1 - life) ** 1.2 * (1 - 0.2 * j) * tw * (1 + 1.5 * f)
-            putcells(cv, x, y, np.clip(0.32 + 0.6 * br, 0, 1), np.outer(br, col), "firework")
+            x = cx + fw["d"][:, 0] * dist
+            y = cy + fw["d"][:, 1] * dist + fw["g"] * S * bb * bb
+            col = base
+            if fw["kind"] == "crossette" and bb > 0.45:            # each star splits in four
+                d0 = 1 - math.exp(-2.8 * 0.45)
+                px = cx + fw["d"][:, 0] * R * fw["spd"] * d0
+                py = cy + fw["d"][:, 1] * R * fw["spd"] * d0
+                k = 0.55 * R * (1 - math.exp(-3.0 * (bb - 0.45)))
+                x = np.concatenate([px + k * math.cos(q) for q in (0.8, 2.4, 3.9, 5.5)])
+                y = np.concatenate([py + k * math.sin(q) for q in (0.8, 2.4, 3.9, 5.5)]) + fw["g"] * S * bb * bb
+                col = np.tile(base, (4, 1))
+            if fw.get("wiggle"):                                    # fish: stars swim as they fly
+                off = np.sin(bb * 22 + fw["ph"]) * 0.07 * R * min(1.0, bb * 3)
+                x, y = x - fw["d"][:, 1] * off, y + fw["d"][:, 0] * off
+            m = len(x)
+            ph = np.resize(fw["ph"], m)
+            br = np.full(m, (1 - life) ** 1.2 * (1 - j / n_tr) * (1 + 1.5 * f))
+            if fw["strobe"] and life > 0.3:                        # strobing stars blink
+                br = br * (np.sin(W0 * 53 * t + ph * 7) > 0.2)
+            elif fw["glitter"] and j > 0:                           # glittering tails
+                br = br * (0.35 + 0.65 * (np.sin(W0 * 41 * t + ph * 13 + j) > 0.1))
+            if j > 0:
+                col = col * np.array([1.0, 0.85, 0.65], F32)        # tails burn warmer
+            add(x, y, br, col)
+            if fw.get("fat"):                                       # palm: thick comet fronds
+                add(x + CW * 0.6, y, br, col)
+        if fw["crackle"] and life > 0.65:                          # crackling white pops
+            dist = R * fw["spd"] * (1 - math.exp(-2.8 * b))
+            x = cx + fw["d"][:, 0] * dist
+            y = cy + fw["d"][:, 1] * dist + fw["g"] * S * b * b
+            pop = (np.sin(W0 * 67 * t + fw["ph"][:, None] * 9 + np.arange(3)) > 0.55)
+            ox, oy = fw["cx"][..., 0] * 0.05 * R, fw["cx"][..., 1] * 0.05 * R
+            br = (pop * (1 - life) * 2.2).reshape(-1)
+            add((x[:, None] + ox).reshape(-1), (y[:, None] + oy).reshape(-1), br,
+                np.tile(PAL["white"], (br.size, 1)))
+
+    if PX:
+        x, y, d, c = (np.concatenate(v) for v in (PX, PY, PD, PC))
+        o = np.argsort(d, kind="stable")                           # brightest wins a cell
+        putcells(cv, x[o], y[o], d[o], c[o], "firework")
     return flash
+
 
 DRAGON_ON = True
 
@@ -957,11 +1200,11 @@ SYN_COL = {"com": (110, 118, 129), "str": (184, 220, 120), "kw": (255, 122, 92),
 class CodePanel:
     """Editor-style panel that scrolls through this file's renderer while it plays."""
 
-    def __init__(self, w, h, frames, fps):
-        self.w, self.h, self.frames, self.fps = w, h, frames, fps
-        src = open(os.path.abspath(__file__), encoding="utf-8").read().splitlines()
-        a = next(i for i, l in enumerate(src) if l.startswith("def leaf_petal"))
-        b = next(i for i, l in enumerate(src) if l.startswith("def anchors"))
+    def __init__(self, w, h, frames, fps, path=__file__, start="def leaf_petal", end="def anchors"):
+        self.w, self.h, self.frames, self.fps, self.path = w, h, frames, fps, path
+        src = open(os.path.abspath(path), encoding="utf-8").read().splitlines()
+        a = next(i for i, l in enumerate(src) if l.startswith(start))
+        b = next(i for i, l in enumerate(src) if l.startswith(end))
         self.first, self.lines = a + 1, [self.tokens(l) for l in src[a:b]]
         self.font = mono_font(22)
         self.small = mono_font(18)
@@ -999,7 +1242,7 @@ class CodePanel:
         dr.rectangle([0, 0, self.w, top], fill=(30, 31, 38))
         for k, c in enumerate([(255, 95, 86), (255, 189, 46), (39, 201, 63)]):
             dr.ellipse([18 + k * 28, 15, 34 + k * 28, 31], fill=c)
-        dr.text((120, 12), os.path.basename(__file__), font=self.small, fill=(200, 200, 205))
+        dr.text((120, 12), os.path.basename(self.path), font=self.small, fill=(200, 200, 205))
         py = f"Python {sys.version_info.major}.{sys.version_info.minor}"
         dr.text((self.w - 16, 12), py, font=self.small, fill=(140, 145, 155), anchor="ra")
         dr.rectangle([0, bot, self.w, self.h], fill=(30, 31, 38))
@@ -1010,14 +1253,20 @@ class CodePanel:
         return np.asarray(img)
 
 
-def setup(cols, rows, cw, ch):
-    global COLS, ROWS, CW, CH, W, H, RR, CC, X, Y, S, HOR, KX, KY, KS, MX, MY, MR, SAMP
+def setup_grid(cols, rows, cw, ch):
+    """Character grid + pixel coordinates of every cell centre. Shared by all scenes."""
+    global COLS, ROWS, CW, CH, W, H, RR, CC, X, Y, S, KS
     COLS, ROWS, CW, CH = cols, rows, cw, ch
     W, H = cols * cw, rows * ch
     RR, CC = np.mgrid[0:rows, 0:cols].astype(F32)
     X, Y = (CC + 0.5) * CW, (RR + 0.5) * CH
     KS = 0.28 * min(W, 1.05 * H)
-    S = KS / 270
+    S = KS / 270                                     # scene scale: 1.0 at 1080 px wide
+
+
+def setup(cols, rows, cw, ch):
+    global HOR, KX, KY, MX, MY, MR, SAMP
+    setup_grid(cols, rows, cw, ch)
     HOR, KX, KY = H * 0.53, W * 0.5, H * 0.74
     MX, MY, MR = W * 0.76, H * 0.135, 0.095 * min(W, 1.05 * H)
     SAMP = 2.4 * KS / min(CW, CH)
@@ -1025,22 +1274,27 @@ def setup(cols, rows, cw, ch):
     build_scene()
 
 
-def render_video(args):
-    setup(args.cols, args.rows, args.cw, args.ch)
+def scene_frames(scene, fps, loops=1):
+    return int(round((scene.intro + scene.loop * loops) * fps))
+
+
+def render_video(args, scene):
+    scene.setup(args.cols, args.rows, args.cw, args.ch)
     build_atlas()
-    frames = int(round(LOOP * args.fps))
-    panel = CodePanel(W, 576, frames, args.fps) if args.showcase else None
+    frames = scene_frames(scene, args.fps, args.loops)
+    panel = CodePanel(W, 576, frames, args.fps, *scene.panel) if args.showcase else None
     ow, oh = W, H + (576 if panel else 0)
+    out = args.out or scene.out
     cmd = ["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgb24",
            "-s", f"{ow}x{oh}", "-r", str(args.fps), "-i", "-", "-c:v", "libx264",
-           "-pix_fmt", "yuv420p", "-crf", "18", "-preset", "medium", "-movflags", "+faststart", args.out]
+           "-pix_fmt", "yuv420p", "-crf", "18", "-preset", "medium", "-movflags", "+faststart", out]
     if not shutil.which("ffmpeg"):
         sys.exit("ffmpeg not found - install it (brew install ffmpeg) or use --png / --term")
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     t0 = time.time()
     for f in range(frames):
         t = f / args.fps
-        img = compose_image(render_cells(t))
+        img = compose_image(scene.render(t))
         if panel:
             img = np.vstack([img, panel.draw(f, t, ow, oh)])
         proc.stdin.write(np.ascontiguousarray(img).tobytes())
@@ -1049,18 +1303,19 @@ def render_video(args):
               end="", flush=True)
     proc.stdin.close()
     proc.wait()
-    print(f"\nwrote {args.out}  ({ow}x{oh}, {args.fps} fps, {frames} frames)")
+    print(f"\nwrote {out}  ({ow}x{oh}, {args.fps} fps, {frames} frames)")
 
 
-def render_png(args):
-    setup(args.cols, args.rows, args.cw, args.ch)
+def render_png(args, scene):
+    scene.setup(args.cols, args.rows, args.cw, args.ch)
     build_atlas()
-    img = compose_image(render_cells(args.png))
+    img = compose_image(scene.render(args.png))
     if args.showcase:
-        frames = int(round(LOOP * args.fps))
+        frames = scene_frames(scene, args.fps, args.loops)
         f = int(args.png * args.fps) % frames
-        img = np.vstack([img, CodePanel(W, 576, frames, args.fps).draw(f, args.png, W, H + 576)])
-    out = args.out if args.out.endswith(".png") else f"krathong_{args.png:g}.png"
+        img = np.vstack([img, CodePanel(W, 576, frames, args.fps, *scene.panel).draw(f, args.png, W, H + 576)])
+    stem = os.path.splitext(scene.out)[0]
+    out = args.out if args.out and args.out.endswith(".png") else f"{stem}_{args.png:g}.png"
     Image.fromarray(img).save(out)
     print(f"wrote {out}")
 
@@ -1131,13 +1386,14 @@ def to_ansi(cv):
     return "\x1b[H" + AnsiScreen().frame(*terminal_cells(cv)) + "\x1b[0m"
 
 
-def play_terminal(args):
-    """Live loop. Time snaps to the frame grid, so the 10 s loop repeats exactly: each
-    frame is rendered once, and each frame-to-frame diff is encoded once, then both
-    are replayed from memory (within a budget) on every later pass of the loop."""
+def play_terminal(args, scene):
+    """Live loop. Time snaps to the frame grid, so the loop repeats exactly: each frame
+    is rendered once, and each frame-to-frame diff is encoded once, then both are
+    replayed from memory (within a budget) on every later pass of the loop. A scene
+    with an intro plays it once, uncached, before looping."""
     out = sys.stdout
     out.write("\x1b[?25l\x1b[2J")
-    frames = int(round(LOOP * args.fps))
+    frames = int(round(scene.loop * args.fps))
     budget = 100e6                                   # bytes of cached cells + diffs
     size, t0 = None, time.time()
     try:
@@ -1145,16 +1401,22 @@ def play_terminal(args):
             ts = shutil.get_terminal_size()
             if (ts.columns, ts.lines) != size:
                 size = (ts.columns, ts.lines)
-                setup(ts.columns, ts.lines - 1, 8, 16)
+                scene.setup(ts.columns, ts.lines - 1, 8, 16)
                 screen, cells_cache, diff_cache, used, prev_n = AnsiScreen(), {}, {}, 0, None
                 out.write("\x1b[0m\x1b[2J")
             start = time.time()
-            n = int((start - t0) * args.fps) % frames
+            if start - t0 < scene.intro:               # intro: render live, no caching
+                screen_t = int((start - t0) * args.fps) / args.fps
+                out.write(screen.frame(*terminal_cells(scene.render(screen_t))))
+                out.flush()
+                time.sleep(max(0.0, (int((start - t0) * args.fps) + 1) / args.fps - (time.time() - t0)))
+                continue
+            n = int((start - t0 - scene.intro) * args.fps) % frames
             if prev_n is not None and n < prev_n:      # once per loop: full repaint,
                 screen.prev, prev_n = None, None       # so a disturbed screen heals
             cells = cells_cache.get(n)
             if cells is None:
-                cells = terminal_cells(render_cells(n / args.fps))
+                cells = terminal_cells(scene.render(scene.intro + n / args.fps))
                 if used + COLS * ROWS * 7 <= budget:
                     cells_cache[n], used = cells, used + COLS * ROWS * 7
             diff = diff_cache.get((prev_n, n))
@@ -1174,9 +1436,10 @@ def play_terminal(args):
         out.write("\x1b[0m\x1b[?25h\n")
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Loy Krathong in coloured ASCII")
-    ap.add_argument("--out", default="krathong.mp4")
+def main(scene=None):
+    scene = scene or KRATHONG
+    ap = argparse.ArgumentParser(description=scene.title)
+    ap.add_argument("--out", default=None, help=f"output file (default {scene.out})")
     ap.add_argument("--fps", type=int, default=30)
     ap.add_argument("--cols", type=int, default=108)
     ap.add_argument("--rows", type=int, default=84)
@@ -1185,17 +1448,24 @@ def main():
     ap.add_argument("--showcase", action="store_true", help="add the scrolling code panel (1080x1920)")
     ap.add_argument("--png", type=float, metavar="T", help="render one still at time T seconds")
     ap.add_argument("--term", action="store_true", help="play live in a truecolor terminal")
+    ap.add_argument("--loops", type=int, default=1, help="loops to include in a video (after any intro)")
     ap.add_argument("--no-fireworks", action="store_true", help="a quiet night, no fireworks")
-    ap.add_argument("--no-dragon", action="store_true", help="leave the dragon out")
+    if scene is KRATHONG:
+        ap.add_argument("--no-dragon", action="store_true", help="leave the dragon out")
     args = ap.parse_args()
     global FIREWORKS_ON, DRAGON_ON
-    FIREWORKS_ON, DRAGON_ON = not args.no_fireworks, not args.no_dragon
+    FIREWORKS_ON, DRAGON_ON = not args.no_fireworks, not getattr(args, "no_dragon", False)
     if args.term:
-        play_terminal(args)
+        play_terminal(args, scene)
     elif args.png is not None:
-        render_png(args)
+        render_png(args, scene)
     else:
-        render_video(args)
+        render_video(args, scene)
+
+
+KRATHONG = SimpleNamespace(
+    title="Loy Krathong in coloured ASCII", setup=setup, render=lambda t: render_cells(t % LOOP),
+    loop=LOOP, intro=0.0, out="krathong.mp4", panel=(__file__, "def leaf_petal", "def anchors"))
 
 
 if __name__ == "__main__":

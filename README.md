@@ -3,7 +3,7 @@
 <p align="center"><img src="media/preview.gif" width="400" alt="ASCII krathong floating on a moonlit river"></p>
 
 A krathong (banana-leaf float with lotus petals, marigolds, a candle and incense)
-drifting on a moonlit river, with rising khom-loi lanterns, fireworks, a red
+drifting on a moonlit river, with rising khom-loi lanterns, a fireworks show, a red
 Chinese dragon flying across the sky, and Thai temple silhouettes. Every pixel is drawn with text glyphs, from one Python file.
 
 The krathong is a real 3-D point cloud. Each frame it is projected and
@@ -14,6 +14,30 @@ output loops seamlessly.
 Full render: [`media/krathong_showcase.mp4`](media/krathong_showcase.mp4) (1080×1920, 30 fps, with the scrolling-code panel).
 
 Inspired by a Loy Krathong clip from the TikTok account *Python Hub*.
+
+## Three scenes
+
+| | Scene | Run it |
+|---|---|---|
+| <img src="media/preview.gif" width="220"> | **Loy Krathong**: the krathong on a moonlit river, lanterns, the dragon and the fireworks show. | `krathong_ascii.py` |
+| <img src="media/castle_preview.png" width="220"> | **Castle Christmas**: a spruce builds itself in front of a fairy-tale castle (a lumpy, snow-capped mound rising to a point), gets dressed with garland, baubles, lights, gifts and a star, then the fireworks loop forever. The plaza has a toy train circling the tree, a walking snowman, snowmen, lamp posts, lit shrubs, a Main Street of shopfronts with marquee bulbs and string lights, a crowd with Santa hats and balloons, and Santa's sleigh circling the castle. | `castle_tree.py` |
+| <img src="media/sunset_preview.png" width="220"> | **Sunset Sea**: the sun sinks into the sea under drifting clouds, with a lighthouse sweeping its beam, sailboats and gulls. The water mirrors the sky and every firework. | `sunset_sea.py` |
+
+Every scene takes the same flags (below), and all of them share one engine and fireworks show in
+`krathong_ascii.py`. The castle scene plays its build once (about 22 s), then loops every 20 s, with the tree in focus and the park softly dimmed behind it.
+Its `--term` mode builds live, then replays the loop from memory.
+
+Render any scene to a video yourself (it plays the castle build, then `--loops` loops):
+
+```bash
+.venv/bin/python castle_tree.py                 # castle_tree.mp4, about 40 s
+.venv/bin/python castle_tree.py --loops 3       # build + three 20 s loops
+.venv/bin/python sunset_sea.py                  # sunset_sea.mp4, one 10 s loop
+.venv/bin/python sunset_sea.py --showcase       # 1080x1920 with the scrolling code panel
+```
+
+The castle build is inspired by an ASCII Christmas-tree
+clip from the TikTok account *dwcminh.ascii*. The castle, the park and the show are original designs.
 
 ---
 
@@ -97,7 +121,8 @@ be uploaded straight to TikTok, Reels or Shorts.
 | `--png T` | | render one frame at time `T` seconds |
 | `--term` | | play live in the terminal |
 | `--no-fireworks` | off | a quiet night, with no fireworks (works with every mode) |
-| `--no-dragon` | off | leave the dragon out (works with every mode) |
+| `--no-dragon` | off | leave the dragon out (krathong scene only) |
+| `--loops N` | `1` | how many loops a video includes after any intro |
 
 The output resolution is `cols × cw` by `rows × ch`. Some examples:
 
@@ -118,9 +143,13 @@ to use), a *colour* and a *material*, and the layers are drawn back to front:
 
 1. **`sky_layer`**: gradient sky, twinkling stars and the full moon (limb-darkened, with maria).
 2. **`lantern_layer`**: khom-loi lanterns rising and fading. Near ones are bigger and faster.
-3. **`firework_layer`**: six shells per loop (peony, ring and willow bursts). Each
-   rocket rises from behind the temples, bursts with a sky flash, and its streaking
-   sparks sag under gravity, twinkle and fade. The flash also lights the river.
+3. **`firework_layer`**: a choreographed theme-park-style show timed to the 10 s loop,
+   built by `build_show`. It uses comet fans, ground fountains and mines, chrysanthemums
+   with pistils, a palm, crossettes that split in four, hearts, a ringed planet, a star,
+   rings in rings, butterflies, swimming fish, many-coloured dahlias, gold willows and a
+   kamuro with crackle, horsetails, and a strobing finale. Shells are paired, but each
+   partner gets its own delay, offset, size, colour and often type, so the show is never
+   mirrored. Every shell flashes the sky and lights the water.
 4. **`temple_layer`**: an ordination hall, chedis and a prang, outlined and warmed by the candle light.
 5. **`dragon_layer`**: a red Chinese dragon crossing the sky once per loop, chasing a
    flaming pearl. Its serpentine body follows an undulating path and is shaded per
