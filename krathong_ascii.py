@@ -9,10 +9,10 @@ moon and the golden water. Sky, moon, floating lanterns (khom loi), temple
 silhouettes and the river are shaded per character cell. Every motion is a
 whole multiple of one 10 s period, so the output loops seamlessly.
 
-    python krathong_ascii.py                 # krathong.mp4   1080x1344 art only
+    python krathong_ascii.py                 # live, in a truecolor terminal (Ctrl-C to quit)
+    python krathong_ascii.py --video         # krathong.mp4   1080x1344 art only
     python krathong_ascii.py --showcase      # krathong.mp4   1080x1920 + code panel
     python krathong_ascii.py --png 4.5       # krathong_4.5.png, one still
-    python krathong_ascii.py --term          # live, in a truecolor terminal
 """
 import argparse
 import math
@@ -1289,7 +1289,7 @@ def render_video(args, scene):
            "-s", f"{ow}x{oh}", "-r", str(args.fps), "-i", "-", "-c:v", "libx264",
            "-pix_fmt", "yuv420p", "-crf", "18", "-preset", "medium", "-movflags", "+faststart", out]
     if not shutil.which("ffmpeg"):
-        sys.exit("ffmpeg not found - install it (brew install ffmpeg) or use --png / --term")
+        sys.exit("ffmpeg not found - install it (brew install ffmpeg), or watch live without --video")
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE)
     t0 = time.time()
     for f in range(frames):
@@ -1447,7 +1447,8 @@ def main(scene=None):
     ap.add_argument("--ch", type=int, default=16, help="char cell height in px")
     ap.add_argument("--showcase", action="store_true", help="add the scrolling code panel (1080x1920)")
     ap.add_argument("--png", type=float, metavar="T", help="render one still at time T seconds")
-    ap.add_argument("--term", action="store_true", help="play live in a truecolor terminal")
+    ap.add_argument("--video", action="store_true", help="render a video file instead of playing live")
+    ap.add_argument("--term", action="store_true", help="play live in the terminal (the default)")
     ap.add_argument("--loops", type=int, default=1, help="loops to include in a video (after any intro)")
     ap.add_argument("--no-fireworks", action="store_true", help="a quiet night, no fireworks")
     if scene is KRATHONG:
@@ -1455,12 +1456,12 @@ def main(scene=None):
     args = ap.parse_args()
     global FIREWORKS_ON, DRAGON_ON
     FIREWORKS_ON, DRAGON_ON = not args.no_fireworks, not getattr(args, "no_dragon", False)
-    if args.term:
-        play_terminal(args, scene)
-    elif args.png is not None:
+    if args.png is not None:
         render_png(args, scene)
-    else:
+    elif not args.term and (args.video or args.showcase or (args.out or "").endswith(".mp4")):
         render_video(args, scene)
+    else:
+        play_terminal(args, scene)
 
 
 KRATHONG = SimpleNamespace(

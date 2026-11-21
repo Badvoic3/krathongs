@@ -7,8 +7,8 @@ A sun half-sunk into the horizon under a dusk gradient, drifting cloud banks lit
 below, a headland with a lighthouse sweeping its beam, sailboats, gulls, and a sea that
 mirrors the whole sky - sun glitter, clouds and every firework burst.
 
-    python sunset_sea.py                  # sunset_sea.mp4
-    python sunset_sea.py --term           # live in the terminal
+    python sunset_sea.py                  # live in the terminal (Ctrl-C to quit)
+    python sunset_sea.py --video          # sunset_sea.mp4
     python sunset_sea.py --png 6          # one still at t = 6 s
 """
 import math

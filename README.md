@@ -23,18 +23,29 @@ Inspired by a Loy Krathong clip from the TikTok account *Python Hub*.
 | <img src="media/castle_preview.png" width="220"> | **Castle Christmas**: a spruce builds itself in front of a fairy-tale castle (a lumpy, snow-capped mound rising to a point), gets dressed with garland, baubles, lights, gifts and a star, then the fireworks loop forever. The plaza has a toy train circling the tree, a walking snowman, snowmen, lamp posts, lit shrubs, a Main Street of shopfronts with marquee bulbs and string lights, a crowd with Santa hats and balloons, and Santa's sleigh circling the castle. | `castle_tree.py` |
 | <img src="media/sunset_preview.png" width="220"> | **Sunset Sea**: the sun sinks into the sea under drifting clouds, with a lighthouse sweeping its beam, sailboats and gulls. The water mirrors the sky and every firework. | `sunset_sea.py` |
 
-Every scene takes the same flags (below), and all of them share one engine and fireworks show in
-`krathong_ascii.py`. The castle scene plays its build once (about 22 s), then loops every 20 s, with the tree in focus and the park softly dimmed behind it.
-Its `--term` mode builds live, then replays the loop from memory.
-
-Render any scene to a video yourself (it plays the castle build, then `--loops` loops):
+Running a scene plays it **live in your terminal**: no flags needed. The castle scene starts
+with the tree building itself, then the show loops every 20 s, with the tree in focus and the
+park softly dimmed behind it.
 
 ```bash
-.venv/bin/python castle_tree.py                 # castle_tree.mp4, about 40 s
-.venv/bin/python castle_tree.py --loops 3       # build + three 20 s loops
-.venv/bin/python sunset_sea.py                  # sunset_sea.mp4, one 10 s loop
-.venv/bin/python sunset_sea.py --showcase       # 1080x1920 with the scrolling code panel
+.venv/bin/python krathong_ascii.py
 ```
+```bash
+.venv/bin/python castle_tree.py
+```
+```bash
+.venv/bin/python sunset_sea.py
+```
+
+Add `--video` to render a video file instead (the castle video includes the build, then `--loops` loops):
+
+```bash
+.venv/bin/python castle_tree.py --video --loops 3       # castle_tree.mp4: build + three 20 s loops
+.venv/bin/python sunset_sea.py --showcase               # 1080x1920 video with the scrolling code panel
+```
+
+Every scene takes the same flags (below), and all of them share one engine and fireworks show in
+`krathong_ascii.py`.
 
 The castle build is inspired by an ASCII Christmas-tree
 clip from the TikTok account *dwcminh.ascii*. The castle, the park and the show are original designs.
@@ -49,8 +60,8 @@ clip from the TikTok account *dwcminh.ascii*. The castle, the park and the show 
 |---|---|---|
 | Python | 3.9 or newer | everything |
 | numpy, Pillow | any recent | the renderer |
-| ffmpeg | any recent | **video output only** (`--png` and `--term` don't need it) |
-| A truecolor terminal | iTerm2, Terminal.app, Windows Terminal, kitty, WezTerm… | live `--term` mode |
+| ffmpeg | any recent | **video output only** (`--video` / `--showcase`) |
+| A truecolor terminal | iTerm2, Terminal.app, Windows Terminal, kitty, WezTerm… | live playback (the default) |
 
 Install ffmpeg:
 
@@ -77,10 +88,10 @@ On Windows, use `.venv\Scripts\pip` and `.venv\Scripts\python` instead of `.venv
 
 ### 3. Watch it live in the terminal
 
-This runs the simulation in real time, so nothing is pre-rendered:
+This is the default. It runs the simulation in real time, so nothing is pre-rendered:
 
 ```bash
-.venv/bin/python krathong_ascii.py --term
+.venv/bin/python krathong_ascii.py
 ```
 
 - The scene fills whatever size the terminal is. A bigger window or a smaller font
@@ -94,7 +105,7 @@ This runs the simulation in real time, so nothing is pre-rendered:
 ### 4. Render a video
 
 ```bash
-.venv/bin/python krathong_ascii.py                                     # krathong.mp4: 1080×1344, scene only
+.venv/bin/python krathong_ascii.py --video                             # krathong.mp4: 1080×1344, scene only
 .venv/bin/python krathong_ascii.py --showcase --out showcase.mp4       # 1080×1920, scene + scrolling code panel
 ```
 
@@ -118,9 +129,10 @@ be uploaded straight to TikTok, Reels or Shorts.
 | `--cols N` / `--rows N` | `108` / `84` | character grid size |
 | `--cw PX` / `--ch PX` | `10` / `16` | size of one character cell in pixels |
 | `--showcase` | off | add the editor-style code panel underneath (adds 576 px of height) |
+| `--video` | off | render a video file instead of playing live (implied by `--showcase` or an `.mp4` `--out`) |
 | `--png T` | | render one frame at time `T` seconds |
-| `--term` | | play live in the terminal |
-| `--no-fireworks` | off | a quiet night, with no fireworks (works with every mode) |
+| `--term` | on | play live in the terminal (the default; overrides the video flags) |
+| `--no-fireworks` | off | no fireworks (works with every mode) |
 | `--no-dragon` | off | leave the dragon out (krathong scene only) |
 | `--loops N` | `1` | how many loops a video includes after any intro |
 

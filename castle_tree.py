@@ -7,8 +7,8 @@ The tree is a 3-D point cloud (five needle tiers, trunk, skirt, garland, baubles
 lights and gifts). It rises from the ground, gets dressed, is topped with a star, then
 turns slowly while the fireworks play above the castle and the snow keeps falling.
 
-    python castle_tree.py                 # castle_tree.mp4  (build + first show + one loop)
-    python castle_tree.py --term          # live: builds once, then loops forever
+    python castle_tree.py                 # live: the tree builds, then the show loops forever
+    python castle_tree.py --video         # castle_tree.mp4  (build + first show + one loop)
     python castle_tree.py --png 30        # one still at t = 30 s
 """
 import math
