@@ -55,6 +55,10 @@ RAMPS = {                        # glyphs from faint to dense, per material
     "flame": " ^*#&@@",
     "spark": " .'*+*",
     "firework": " ..'+*#@",
+    "dragon": " .:;=+x%#@",
+    "dgold": " .-=*#@",
+    "whisker": " .'~~",
+    "pearl": " .oO0@",
     "smoke": " .:'~",
 }
 MID = {name: i for i, name in enumerate(RAMPS)}
@@ -114,12 +118,31 @@ def putmax(cv, d, col, mid, floor=0.04):
     put(cv, (d > cv[0]) & (d > floor), d, col, mid)
 
 
-def putcells(cv, x, y, d, col, mid):
+def putflat(cv, idx, d, col, mid):
+    """Write cells by flat index."""
+    cv[0].reshape(-1)[idx] = d
+    cv[1].reshape(-1, 3)[idx] = col
+    cv[2].reshape(-1)[idx] = MID[mid]
+
+
+def window(x0, x1, y0, y1):
+    """Row/col slices of the cells whose centres can fall inside a pixel box."""
+    c0, c1 = max(0, math.floor(x0 / CW - 0.5)), min(COLS, math.ceil(x1 / CW - 0.5) + 1)
+    r0, r1 = max(0, math.floor(y0 / CH - 0.5)), min(ROWS, math.ceil(y1 / CH - 0.5) + 1)
+    return slice(r0, max(r0, r1)), slice(c0, max(c0, c1))
+
+
+def sub(cv, rs, cs):
+    """A canvas view onto a window; writes go straight through to cv."""
+    return [cv[0][rs, cs], cv[1][rs, cs], cv[2][rs, cs]]
+
+
+def putcells(cv, x, y, d, col, mid, force=False):
     """Splat individual points (sparks, fireflies) at pixel positions."""
     c, r = (np.asarray(x) // CW).astype(int), (np.asarray(y) // CH).astype(int)
     ok = (c >= 0) & (c < COLS) & (r >= 0) & (r < ROWS) & (d > 0.05)
     r, c, d, col = r[ok], c[ok], np.asarray(d)[ok], np.asarray(col, F32)[ok]
-    ok = d > cv[0][r, c]
+    ok = np.ones_like(d, bool) if force else d > cv[0][r, c]
     cv[0][r[ok], c[ok]], cv[1][r[ok], c[ok]], cv[2][r[ok], c[ok]] = d[ok], col[ok], MID[mid]
 
 
@@ -274,33 +297,51 @@ def project(P):
     return KX + KS * P[:, 0] * f, KY - KS * yv * f, zv
 
 
-def zbuffer(xs, ys, zv, keep):
-    """Nearest point per char cell -> (flat cell index, point index)."""
+def zbuffer(xs, ys, zv):
+    """Nearest point per char cell -> (flat cell index, point index).
+
+    Sort-free: a scatter-max finds each cell's nearest depth, then the lowest
+    point index among the points at that depth wins (same as a stable sort).
+    """
     col, row = np.floor(xs / CW).astype(np.int64), np.floor(ys / CH).astype(np.int64)
-    idx = np.nonzero(keep & (col >= 0) & (col < COLS) & (row >= 0) & (row < ROWS))[0]
-    idx = idx[np.argsort(-zv[idx], kind="stable")]
-    cells, first = np.unique(row[idx] * COLS + col[idx], return_index=True)
-    return cells, idx[first]
+    idx = np.flatnonzero((col >= 0) & (col < COLS) & (row >= 0) & (row < ROWS))
+    lin, z = row[idx] * COLS + col[idx], zv[idx]
+    zb = np.full(ROWS * COLS, -np.inf, z.dtype)
+    np.maximum.at(zb, lin, z)
+    win = np.flatnonzero(z == zb[lin])
+    first = np.full(ROWS * COLS, len(idx), np.int64)
+    np.minimum.at(first, lin[win], win)
+    cells = np.flatnonzero(first < len(idx))
+    return cells, idx[first[cells]]
 
 
-def render_krathong(cv, t, reflect=False):
-    """Z-buffer surface points into the char grid, then light each cell."""
-    P, N, Cb, Mt, Em = GEOM
+def krathong_pose(t):
+    """Posed points above the waterline, shared by the reflection and main passes."""
     R, T = body_pose(t)
-    Pw, Nw = P @ R.T + T, N @ R.T
-    keep = Pw[:, 1] > -0.01                                 # below waterline: hidden
-    light = CANDLE_TOP @ R.T + T + np.array([0, 0.12, 0], F32)
+    Pw = GEOM[0] @ R.T + T
+    k = np.flatnonzero(Pw[:, 1] > -0.01)                    # below waterline: hidden
+    return R, Pw[k], k, CANDLE_TOP @ R.T + T + np.array([0, 0.12, 0], F32)
+
+
+def render_krathong(cv, t, pose, reflect=False):
+    """Z-buffer surface points into the char grid, then light each cell."""
+    _, N, Cb, Mt, Em = GEOM
+    R, Pw, kidx, light = pose
     if reflect:
-        Pw, Nw, light = Pw * FLIP_Y, Nw * FLIP_Y, light * FLIP_Y
+        Pw, light = Pw * FLIP_Y, light * FLIP_Y
     xs, ys, zv = project(Pw)
     if reflect:
         xs = xs + 6 * S * np.sin(ys * 0.045 / S - W0 * 4 * t)
-    cells, w = zbuffer(xs, ys, zv, keep)
+    cells, w = zbuffer(xs, ys, zv)
     if reflect:
         ok = cv[2].reshape(-1)[cells] == MID["water"]
         cells, w = cells[ok], w[ok]
+    g = kidx[w]                                             # back to geometry indices
+    Nw = N[g] @ R.T
+    if reflect:
+        Nw = Nw * FLIP_Y
 
-    n = view(Nw[w])
+    n = view(Nw)
     n *= np.where(n[:, 2] < 0, -1.0, 1.0)[:, None]           # two-sided: face viewer
     d = view(light) - view(Pw[w])
     dist2 = (d ** 2).sum(1)
@@ -311,8 +352,8 @@ def render_krathong(cv, t, reflect=False):
     moon = 0.30 * np.clip(n @ MOON_DIR, 0, 1)[:, None] * np.array([0.6, 0.7, 1.0], F32)
     amb = (0.30 + 0.08 * n[:, 1] + 0.22 * n[:, 2])[:, None] * np.array([0.60, 0.68, 0.70], F32)
     bounce = 0.45 * np.clip(-n[:, 1], 0.2, 1)[:, None] * np.array([0.9, 0.7, 0.25], F32)
-    lit = 1 - np.exp(-1.5 * Cb[w] * (amb + cand + moon + bounce))
-    em = Em[w]
+    lit = 1 - np.exp(-1.5 * Cb[g] * (amb + cand + moon + bounce))
+    em = Em[g]
     lit[em] = np.array([1.0, 0.42, 0.12], F32) * (0.9 + 0.2 * math.sin(W0 * 3 * t))
     dens = np.clip(0.34 + 0.85 * lum(lit), 0.36, 1.0)
     dens[em] = 1.0
@@ -323,7 +364,7 @@ def render_krathong(cv, t, reflect=False):
         dens = dens * 0.7
     cv[0].reshape(-1)[cells] = dens
     cv[1].reshape(-1, 3)[cells] = lit
-    cv[2].reshape(-1)[cells] = Mt[w]
+    cv[2].reshape(-1)[cells] = Mt[g]
 
 
 def anchors(t):
@@ -363,6 +404,7 @@ def build_scene():
     EDGE = m & ~(np.roll(m, 1, 0) & np.roll(m, 1, 1) & np.roll(m, -1, 1))
     WIN_H = hash2(RR, CC, 5.0)
 
+    build_static()
     rng = np.random.default_rng(7)
     LANTERNS = [dict(x=rng.uniform(0.04, 0.96), ph=rng.uniform(), sz=rng.uniform(0.55, 1.3),
                      sw=rng.uniform(4, 22), k=int(rng.integers(2, 6))) for _ in range(16)]
@@ -389,28 +431,57 @@ def build_scene():
             life=3.0 if style == "willow" else FW_LIFE))
 
 
-def sky_layer(cv, t):
-    m = Y < HOR
+def build_static():
+    """Everything that depends only on the grid, computed once per size, not per frame."""
+    global SKY, TMP, WAT
+    m = Y < HOR                                                  # sky, stars, moon
     g = np.clip(Y / HOR, 0, 1)
     dm = np.hypot(X - MX, Y - MY)
     mg = np.exp(-np.maximum(dm - MR, 0) / (MR * 0.9))
     col = mixc((0.020, 0.025, 0.060), (0.16, 0.08, 0.05), g ** 3)
     col = col + (mg * 0.25)[..., None] * np.array([0.75, 0.72, 0.55], F32)
-    put(cv, m, 0.3 + 0.35 * mg, col, "sky")
-
     hv, br = hash2(RR, CC, 1.7), hash2(RR, CC, 3.1)
-    tw = 0.55 + 0.45 * np.sin(W0 * (1 + np.floor(br * 4)) * t + hv * 628)
     star = m & (hv > 0.972) & (Y < HOR - 0.03 * H) & (dm > MR * 1.3)
     scol = mixc((0.75, 0.80, 1.0), (1.0, 0.9, 0.7), hash2(RR, CC, 9.2))
-    put(cv, star, 0.45 + 0.5 * br * tw, scol * (0.30 + 0.70 * tw * br)[..., None], "star")
-
-    disk = dm < MR                                               # the full moon
+    disk = dm < MR
     limb = np.sqrt(np.clip(1 - (dm / MR) ** 2, 0, 1))
     maria = 0.5 + 0.5 * np.sin(X * 0.045 / S + 1.3) * np.sin(Y * 0.05 / S + 0.4)
     maria = np.clip(maria + 0.3 * np.sin(X * 0.11 / S - Y * 0.07 / S), 0, 1)
     shade = 0.70 + 0.30 * limb - 0.18 * maria
-    put(cv, disk, 0.55 + 0.45 * limb - 0.2 * maria,
-        np.array([1.0, 0.96, 0.82], F32) * shade[..., None], "moon")
+    SKY = dict(i=np.flatnonzero(m), d=(0.3 + 0.35 * mg)[m], col=col[m],
+               si=np.flatnonzero(star), hv=hv[star], br=br[star], scol=scol[star],
+               mi=np.flatnonzero(disk), md=(0.55 + 0.45 * limb - 0.2 * maria)[disk],
+               mcol=(np.array([1.0, 0.96, 0.82], F32) * shade[..., None])[disk])
+
+    TMP = dict(i=np.flatnonzero(TEMPLE), e=np.flatnonzero(EDGE), w=np.flatnonzero(WINDOWS),
+               wh=WIN_H[WINDOWS])                                # temple cells only
+
+    r = int(np.argmax(Y[:, 0] >= HOR)) if (Y[:, 0] >= HOR).any() else ROWS
+    Xw, Yw, RRw, CCw = X[r:], Y[r:], RR[r:], CC[r:]               # water rows only
+    q = np.clip((Yw - HOR) / (H - HOR), 0, 1)
+    z = 1.0 / (q + 0.07)
+    u = (Xw - KX) / ((60 + q * 700) * S)
+    r0 = int(HOR // CH)
+    dyr, mr = Yw - KY, Yw - HOR
+    rho = np.hypot(Xw - KX, (Yw - KY - 20 * S) * 2.6)
+    WAT = dict(
+        r=r, X=Xw, CC=CCw, q=q, q46=(0.4 + 0.6 * q), c9=np.clip(1 - q * 9, 0, 1) * 0.7, q12=(0.12 * (1 - q)),
+        a1=u * 6 + z * 1.4, a2=u * 11 - z * 2.3, a3=u * 3 + z * 3.9, a4=u * 17 + z * 6.1,
+        rm=np.clip(2 * r0 - RRw - 1, 0, ROWS - 1).astype(int), fe=np.exp(-(RRw - r0) / (0.10 * H / CH)),
+        wid=24 * S + np.clip(dyr, 0, None) * 0.10, dyrm=(dyr > -40 * S),
+        dyre=np.exp(-np.clip(dyr, 0, None) / (320 * S)), dyr12=dyr * 0.12 / S,
+        mw=20 * S + mr * 0.10, moe=np.exp(-mr / (420 * S)), mr10=mr * 0.10 / S,
+        pool=np.exp(-(((Xw - KX) / (300 * S)) ** 2 + ((Yw - KY - 15 * S) / (120 * S)) ** 2) * 1.4),
+        rho55=rho * 0.055 / S, rhoe=np.exp(-rho / (420 * S)))
+
+
+def sky_layer(cv, t):
+    k = SKY
+    putflat(cv, k["i"], k["d"], k["col"], "sky")
+    br = k["br"]
+    tw = 0.55 + 0.45 * np.sin(W0 * (1 + np.floor(br * 4)) * t + k["hv"] * 628)
+    putflat(cv, k["si"], 0.45 + 0.5 * br * tw, k["scol"] * (0.30 + 0.70 * tw * br)[..., None], "star")
+    putflat(cv, k["mi"], k["md"], k["mcol"], "moon")             # the full moon
 
 
 def lantern_layer(cv, t):
@@ -425,13 +496,17 @@ def lantern_layer(cv, t):
         fade = min(1, p * 6) * min(1, (1 - p) * (4 + 6 * near))
         flick = 0.85 + 0.15 * math.sin(W0 * L["k"] * t + L["ph"] * 20)
         lw, lh = 17 * S * L["sz"], 22 * S * L["sz"]
-        dx, dy = (X - lx) / lw, (Y - ly) / lh
+        rs, cs = window(lx - 3 * lw, lx + 3 * lw, ly - 3 * lh, ly + 3 * lh)  # glow < floor beyond
+        sc = sub(cv, rs, cs)
+        if sc[0].size == 0:
+            continue
+        dx, dy = (X[rs, cs] - lx) / lw, (Y[rs, cs] - ly) / lh
         inside = (np.abs(dy) < 1) & (np.abs(dx) < 0.85 - 0.22 * dy)
         b = (dy + 1) / 2
         col = mixc((0.95, 0.38, 0.08), (1.0, 0.80, 0.38), b) * ((0.55 + 0.45 * b) * fade * flick)[..., None]
-        put(cv, inside & (fade > 0.05), (0.45 + 0.55 * b) * fade, col, "lantern")
+        put(sc, inside & (fade > 0.05), (0.45 + 0.55 * b) * fade, col, "lantern")
         g = 0.36 * np.exp(-(dx ** 2 + dy ** 2) / 3.5) * fade * flick
-        putmax(cv, g, np.array([1.0, 0.55, 0.18], F32) * g[..., None], "glow")
+        putmax(sc, g, np.array([1.0, 0.55, 0.18], F32) * g[..., None], "glow")
 
 
 FW_COUNT, FW_RISE, FW_LIFE = 6, 0.9, 2.3
@@ -443,7 +518,6 @@ FW_COLOURS = [((1.0, 0.80, 0.35), (1.0, 0.45, 0.10)), ((1.0, 0.30, 0.30), (1.0, 
 def firework_layer(cv, t):
     """Shells rise from behind the temples, burst, sag under gravity and fade."""
     flash = np.zeros(3, F32)
-    sky = Y < HOR
     for fw in FIREWORKS:
         a = (t - fw["t0"]) % LOOP
         cx, cy, R = fw["x"] * W, fw["y"] * H, fw["r"] * S
@@ -462,8 +536,11 @@ def firework_layer(cv, t):
             continue
         f = math.exp(-b * 5)                                     # burst flash
         flash += c1 * f
-        dd = np.hypot(X - cx, Y - cy) / (R * 1.6)
-        cv[1][sky] += (np.exp(-dd ** 2) * f * 0.35)[sky][:, None] * c1
+        rs, cs = window(cx - 5.2 * R, cx + 5.2 * R, cy - 5.2 * R, cy + 5.2 * R)  # flash < 1e-5 beyond
+        Xs, Ys = X[rs, cs], Y[rs, cs]
+        dd = np.hypot(Xs - cx, Ys - cy) / (R * 1.6)
+        sky = Ys < HOR
+        cv[1][rs, cs][sky] += (np.exp(-dd ** 2) * f * 0.35)[sky][:, None] * c1
         tw = np.where(life > 0.55, np.sin(W0 * 37 * t + fw["ph"]) > -0.2, True)
         col = c1 * (1 - life) + c2 * life + 0.6 * f
         for j in range(5):                                       # head + streak
@@ -475,63 +552,270 @@ def firework_layer(cv, t):
             putcells(cv, x, y, np.clip(0.32 + 0.6 * br, 0, 1), np.outer(br, col), "firework")
     return flash
 
+DRAGON_ON = True
+
+
+def stroke(cv, P, width, d, col, mid, force=False):
+    """Thick polyline through dense points P (n,2), splatted cell by cell."""
+    tg = np.gradient(P, axis=0)
+    tg /= np.linalg.norm(tg, axis=1, keepdims=True) + 1e-9
+    nr = np.stack([-tg[:, 1], tg[:, 0]], 1)
+    width = np.broadcast_to(np.asarray(width, F32), (len(P),))
+    col = np.broadcast_to(np.asarray(col, F32), (len(P), 3))
+    offs = np.linspace(-0.5, 0.5, max(1, int(width.max() / (0.45 * min(CW, CH))) + 1))
+    if np.ndim(d) or d <= 0.05:                          # general case: one pass at a time
+        d = np.broadcast_to(np.asarray(d, F32), (len(P),))
+        for o in offs:
+            Q = P + nr * (o * width)[:, None]
+            putcells(cv, Q[:, 0], Q[:, 1], d, col, mid, force)
+        return
+    # Constant density: every pass at once, resolved exactly as the pass-by-pass
+    # splat would: forced -> the last write wins; otherwise the first pass to touch
+    # a cell decides (later passes can't beat an equal density), and within that
+    # pass the last point wins.
+    Q = (P[None] + nr[None] * (offs[:, None, None] * width[None, :, None])).reshape(-1, 2)
+    c, r = (Q[:, 0] // CW).astype(int), (Q[:, 1] // CH).astype(int)
+    ok = np.flatnonzero((c >= 0) & (c < COLS) & (r >= 0) & (r < ROWS))
+    lin, pid = r[ok] * COLS + c[ok], ok // len(P)
+    last = np.full(ROWS * COLS, -1, np.int64)
+    if force:
+        np.maximum.at(last, lin, np.arange(len(lin)))
+    else:
+        first = np.full(ROWS * COLS, len(offs), np.int64)
+        np.minimum.at(first, lin, pid)
+        cand = np.flatnonzero(pid == first[lin])
+        np.maximum.at(last, lin[cand], cand)
+    cells = np.flatnonzero(last >= 0)
+    w = last[cells]
+    if not force:
+        keep = d > cv[0].reshape(-1)[cells]
+        cells, w = cells[keep], w[keep]
+    putflat(cv, cells, d, np.tile(col, (len(offs), 1))[ok[w]], mid)
+
+
+def curve(f, length):
+    """Sample a parametric curve f(k), k in [0,1], about every half cell."""
+    k = np.linspace(0, 1, int(length / (0.4 * min(CW, CH))) + 2, dtype=F32)
+    return np.stack(f(k), 1)
+
+
+def dragon_layer(cv, t, flash=None):
+    """A red Chinese dragon swimming through the sky after its flaming pearl."""
+    R0, L, DN = 48 * S, 1.05 * W, 360
+    s = np.linspace(0, 1, DN, dtype=F32)
+    hx = -0.4 * W + 2.65 * W * (t / LOOP)           # off-screen at both ends of the loop
+    xs = hx - s * L
+    ys = (HOR - 0.30 * H + 0.06 * H * np.sin(2 * np.pi * xs / (0.62 * W) + W0 * 2 * t)
+          + 0.01 * H * math.sin(W0 * 3 * t))
+    if xs[-1] - 4 * R0 > W or hx + 6 * R0 < 0:
+        return
+    tx, ty = -np.gradient(xs), -np.gradient(ys)      # tangent, pointing to the head
+    nn = np.hypot(tx, ty)
+    tx, ty = tx / nn, ty / nn
+    nx, ny = -ty, tx                                  # normal toward the belly
+    r = R0 * (0.85 + 0.25 * np.exp(-((s - 0.22) / 0.12) ** 2)) * (1 - 0.82 * s ** 1.7)
+    r *= 0.62 + 0.38 * np.clip((s - 0.02) / 0.08, 0, 1)            # slim neck behind the head
+    arc = np.concatenate([[0], np.cumsum(np.hypot(np.diff(xs), np.diff(ys)))])
+    tint = np.zeros(3, F32) if flash is None else 0.25 * flash
+    hy = float(ys[0])
+    T0, N0 = np.array([tx[0], ty[0]]), np.array([nx[0], ny[0]])
+
+    def at(i, v):                                     # point on the body surface
+        return np.array([xs[i] + nx[i] * r[i] * v, ys[i] + ny[i] * r[i] * v])
+
+    HS = 1.35 * R0                                    # head unit, bigger than the body
+
+    def head(u, w):                                   # head-local (units of HS) -> screen
+        return hx + (u * T0[0] + w * N0[0]) * HS, hy + (u * T0[1] + w * N0[1]) * HS
+
+    # legs: thigh swings back, forearm reaches forward, three claws
+    for j, (sl, ph) in enumerate([(0.17, 0.0), (0.27, 3.1), (0.56, 1.6), (0.66, 4.7)]):
+        i = int(sl * (DN - 1))
+        T, N, k = np.array([tx[i], ty[i]]), np.array([nx[i], ny[i]]), r[i] / R0
+        sw = 0.6 * math.sin(W0 * 4 * t + ph)
+        a1, a2 = 0.45 + sw, 0.55 - 0.4 * sw
+        base = at(i, 0.6)
+        knee = base + (N * math.cos(a1) - T * math.sin(a1)) * 1.25 * R0 * k
+        d2 = N * math.cos(a2) + T * math.sin(a2)
+        paw = knee + d2 * 0.95 * R0 * k
+        col = np.array([0.80, 0.10, 0.06], F32) + tint
+        stroke(cv, np.linspace(base, knee, 12), 0.42 * R0 * k, 0.75, col, "dragon")
+        stroke(cv, np.linspace(knee, paw, 10), 0.30 * R0 * k, 0.75, col, "dragon")
+        for ca in (-0.7, 0.0, 0.7):
+            cd = d2 * math.cos(ca) + T * math.sin(ca)
+            stroke(cv, np.linspace(paw, paw + cd * 0.4 * R0 * k, 5), 0.1 * R0, 0.85,
+                   (1.0, 0.92, 0.65), "dgold")
+
+    # flowing mane along the neck and a flame tuft on the tail
+    for j in range(6):
+        i = int((0.015 + 0.016 * j) * (DN - 1))
+        T, N = np.array([tx[i], ty[i]]), np.array([nx[i], ny[i]])
+        b, ln, ph = at(i, -1.0), (1.7 - 0.1 * j) * R0, j * 0.9
+        P = curve(lambda k: tuple(b[q] + (-0.75 * T[q] - 0.65 * N[q]) * k * ln
+                                  + N[q] * 0.25 * R0 * k * np.sin(k * 6 - W0 * 6 * t + ph)
+                                  for q in (0, 1)), ln)
+        kk = np.linspace(0, 1, len(P))
+        stroke(cv, P, 0.14 * R0 * (1 - 0.6 * kk), 0.7, mixc((1.0, 0.42, 0.06), (1.0, 0.78, 0.30), kk), "dgold")
+    T, N, b = np.array([tx[-1], ty[-1]]), np.array([nx[-1], ny[-1]]), np.array([xs[-1], ys[-1]])
+    for j, ang in enumerate(np.linspace(-0.7, 0.7, 6)):
+        dv = -T * math.cos(ang) + N * math.sin(ang)
+        P = curve(lambda k: tuple(b[q] + dv[q] * k * 1.9 * R0
+                                  + N[q] * 0.3 * R0 * k * np.sin(k * 5 - W0 * 7 * t + j) for q in (0, 1)), 1.9 * R0)
+        kk = np.linspace(0, 1, len(P))
+        stroke(cv, P, 0.30 * R0 * (1 - 0.8 * kk), 0.8, mixc((1.0, 0.35, 0.05), (1.0, 0.85, 0.35), kk), "dgold")
+
+    # scaled body, gold belly plates, saw-tooth dorsal fins
+    x0, x1, y0, y1 = xs[-1] - 3 * R0, hx + 3 * R0, ys.min() - 3 * R0, ys.max() + 3 * R0
+    rs, cs = window(x0, x1, y0, y1)
+    Xs, Ys = X[rs, cs], Y[rs, cs]
+    sel = (Xs > x0) & (Xs < x1) & (Ys > y0) & (Ys < y1)
+    idx = (RR[rs, cs] * COLS + CC[rs, cs]).astype(np.int64)[sel]
+    if len(idx):
+        # Only samples within 1.75 * max radius horizontally can be drawn (body q<1,
+        # fins q<1.75), and xs is evenly spaced, so search a narrow band, not all DN.
+        cx_, cy_ = Xs[sel], Ys[sel]
+        ds = L / (DN - 1)
+        m = int(math.ceil(1.75 * float(r.max()) / ds)) + 2
+        j = np.clip(np.rint((hx - cx_) / ds).astype(np.int64)[:, None] + np.arange(-m, m + 1), 0, DN - 1)
+        dx, dy = cx_[:, None] - xs[j], cy_[:, None] - ys[j]
+        q = np.hypot(dx, dy) / r[j]
+        jj = q.argmin(1)
+        ar = np.arange(len(idx))
+        i, qi = j[ar, jj], q[ar, jj]
+        v = (dx[ar, jj] * nx[i] + dy[ar, jj] * ny[i]) / r[i]
+        a = arc[i]
+        sh = np.clip(0.45 + 0.55 * np.sqrt(np.clip(1 - v * v, 0, 1)) - 0.2 * v, 0, 1)
+        edge = (((a / (0.45 * R0) + 0.5 * np.floor((v + 1) * 2.5)) % 1.0) < 0.3).astype(F32)
+        body = qi < 1
+        col = mixc((0.42, 0.02, 0.03), (1.0, 0.17, 0.08), sh) * (1 - 0.25 * edge)[:, None] + tint
+        putflat(cv, idx[body], (0.62 + 0.3 * sh - 0.12 * edge)[body], col[body], "dragon")
+        belly = body & (v > 0.42) & (s[i] < 0.97)
+        plate = np.where((a / (0.35 * R0)) % 1.0 < 0.25, 0.6, 1.0)
+        bcol = np.array([1.0, 0.74, 0.28], F32) * ((0.5 + 0.5 * sh) * plate)[:, None] + tint
+        putflat(cv, idx[belly], 0.72 * plate[belly], bcol[belly], "dgold")
+        e, f = qi - 1, (a / (0.9 * R0)) % 1.0
+        fin = (qi >= 1) & (v < -0.9) & (e < 0.75 * (1 - f)) & (s[i] > 0.05) & (s[i] < 0.9)
+        fcol = np.array([1.0, 0.55, 0.12], F32) * (0.65 + 0.35 * (1 - e))[:, None] + tint
+        putflat(cv, idx[fin], 0.62, fcol[fin], "dgold")
+
+    # head: skull, snout, opening jaw, brow, eye, beard
+    rs, cs = window(hx - 3.4 * HS, hx + 3.4 * HS, hy - 3.4 * HS, hy + 3.4 * HS)
+    Xs, Ys = X[rs, cs], Y[rs, cs]
+    hm = np.hypot(Xs - hx, Ys - hy) < 3.4 * HS
+    hsel = (RR[rs, cs] * COLS + CC[rs, cs]).astype(np.int64)[hm]
+    if len(hsel):
+        px, py = Xs[hm] - hx, Ys[hm] - hy
+        u = (px * T0[0] + py * T0[1]) / HS
+        w = (px * N0[0] + py * N0[1]) / HS
+        mo = 0.25 + 0.30 * (0.5 + 0.5 * math.sin(W0 * 4 * t))
+        skull = ((u - 0.2) / 1.5) ** 2 + ((w + 0.05) / 1.0) ** 2 < 1
+        snout = (u > 0.8) & (u < 2.5) & (w > -0.62 + 0.18 * (u - 0.8)) & (w < 0.25)
+        jaw_top = 0.25 + mo * np.clip(u - 0.6, 0, None)
+        jaw = (u > 0.5) & (u < 2.2) & (w > jaw_top) & (w < jaw_top + 0.38 * (1 - (u - 0.5) / 2.0))
+        mouth = (u > 0.9) & (u < 2.2) & (w >= 0.25) & (w <= jaw_top)
+        nose = ((u - 2.35) / 0.3) ** 2 + ((w + 0.35) / 0.22) ** 2 < 1
+        brow = (u > 0.15) & (u < 1.2) & (w > -0.95 + 0.1 * u) & (w < -0.62 + 0.05 * u)
+        eye = ((u - 0.7) / 0.36) ** 2 + ((w + 0.36) / 0.28) ** 2 < 1
+        beard = (u > -0.7) & (u < 0.7) & (w > 0.7) & (w < 0.75 + 0.7 * (1 - ((u + 0.7) / 0.35) % 1.0))
+        hs = np.clip(0.95 - 0.3 * (w + 1) / 2, 0, 1)
+        red = np.array([1.0, 0.18, 0.08], F32) * hs[:, None] + tint
+        for m, d, c, mid in [
+                (beard, 0.7, np.array([1.0, 0.70, 0.25], F32) + tint, "dgold"),
+                (skull | snout | jaw | nose, 0.6 + 0.3 * hs, red, "dragon"),
+                (mouth, 0.45, np.array([0.30, 0.0, 0.02], F32), "dragon"),
+                (brow, 0.8, np.array([1.0, 0.80, 0.30], F32) + tint, "dgold"),
+                (eye, 1.0, np.array([1.0, 0.97, 0.55], F32), "pearl")]:
+            if m.any():
+                putflat(cv, hsel[m], np.broadcast_to(d, m.shape)[m],
+                        np.broadcast_to(c, m.shape + (3,))[m], mid)
+        fu = np.arange(1.0, 2.3, 0.35)                                # teeth on both jaws
+        for fw_ in (0.28, None):
+            fx_, fy_ = head(fu, 0.28 if fw_ else 0.22 + mo * (fu - 0.6))
+            putcells(cv, fx_, fy_, np.full(len(fu), 0.95), np.tile([1.0, 1.0, 0.9], (len(fu), 1)), "dgold", True)
+
+    # antlers and long whiskers in front of the head
+    for bu, bw, sp in [(-0.1, -0.85, 1.0), (0.35, -0.9, 0.85)]:
+        P = curve(lambda k: head(bu - (0.3 * k + 0.5 * k * k) * sp, bw - (1.3 * k - 0.2 * k * k) * sp), 1.6 * HS)
+        kk = np.linspace(0, 1, len(P))
+        stroke(cv, P, 0.2 * HS * (1 - 0.7 * kk), 0.75, (1.0, 0.80, 0.40), "dgold", True)
+        jb = P[len(P) // 2]
+        P2 = curve(lambda k: (jb[0] + (0.4 * T0[0] - N0[0]) * k * 0.6 * HS,
+                              jb[1] + (0.4 * T0[1] - N0[1]) * k * 0.6 * HS), 0.6 * HS)
+        stroke(cv, P2, 0.12 * HS, 0.85, (0.95, 0.82, 0.50), "dgold", True)
+    for sgn, w0 in [(-1, 0.0), (1, 0.15)]:
+        P = curve(lambda k: head(2.4 - k * 3.2, w0 + sgn * (0.3 + 1.0 * k)
+                                 + 0.3 * k * np.sin(k * 6 - W0 * 8 * t + sgn)), 3.6 * HS)
+        stroke(cv, P, 0.09 * R0, 0.7, (1.0, 0.85, 0.45), "whisker")
+
+    # the flaming pearl it chases
+    pxc, pyc = head(3.6, -0.3 + 0.3 * math.sin(W0 * 5 * t))
+    pr = 4.2 * 0.42 * R0                                       # glow < its floor beyond
+    rs, cs = window(pxc - pr, pxc + pr, pyc - pr, pyc + pr)
+    cv = sub(cv, rs, cs)
+    Xs, Ys = X[rs, cs], Y[rs, cs]
+    dd = np.hypot(Xs - pxc, Ys - pyc) / (0.42 * R0)
+    ang = np.arctan2(Ys - pyc, Xs - pxc)
+    spike = 0.5 + 0.5 * np.sin(ang * 7 + W0 * 6 * t)
+    flame = (dd >= 1) & (dd < 1.4 + 0.9 * spike)
+    put(cv, flame, 0.55, np.array([1.0, 0.50, 0.10], F32) * (1.2 - 0.4 * (dd - 1))[..., None].clip(0.3, 1), "dgold")
+    pearl = dd < 1
+    pc = mixc((0.75, 0.85, 1.0), (1.0, 1.0, 1.0), np.clip(1 - dd, 0, 1))
+    put(cv, pearl, 0.7 + 0.3 * (1 - dd), pc, "pearl")
+    g = 0.45 * np.exp(-((dd / 3.5) ** 2))
+    putmax(cv, g, np.array([1.0, 0.75, 0.40], F32) * g[..., None], "glow", 0.12)
+
 
 def temple_layer(cv, t, fx, fy):
-    warm = np.exp(-np.hypot(X - fx, Y - fy) / (380 * S))[..., None]
-    body = np.array([0.11, 0.055, 0.025], F32) + warm * np.array([0.30, 0.14, 0.04], F32)
-    put(cv, TEMPLE, 0.36 + 0.25 * warm[..., 0], body, "temple")
-    edge = np.array([0.40, 0.19, 0.06], F32) + warm * np.array([0.45, 0.22, 0.06], F32)
-    put(cv, EDGE, 0.62 + 0.2 * warm[..., 0], edge, "temple")
-    fl = 0.75 + 0.25 * np.sin(W0 * (2 + np.floor(WIN_H * 4)) * t + WIN_H * 30)
-    put(cv, WINDOWS, 0.95, np.array([1.0, 0.74, 0.30], F32) * fl[..., None], "window")
+    k = TMP
+    Xf, Yf = X.reshape(-1), Y.reshape(-1)
+    for idx, base, add, d0, d1 in [
+            (k["i"], (0.11, 0.055, 0.025), (0.30, 0.14, 0.04), 0.36, 0.25),
+            (k["e"], (0.40, 0.19, 0.06), (0.45, 0.22, 0.06), 0.62, 0.2)]:
+        warm = np.exp(-np.hypot(Xf[idx] - fx, Yf[idx] - fy) / (380 * S))[..., None]
+        col = np.array(base, F32) + warm * np.array(add, F32)
+        putflat(cv, idx, d0 + d1 * warm[..., 0], col, "temple")
+    fl = 0.75 + 0.25 * np.sin(W0 * (2 + np.floor(k["wh"] * 4)) * t + k["wh"] * 30)
+    putflat(cv, k["w"], 0.95, np.array([1.0, 0.74, 0.30], F32) * fl[..., None], "window")
 
 
 def water_layer(cv, t, fx, flash=None):
     """Water per cell: summed waves, perspective, and light reflections."""
-    wm = Y >= HOR
-    q = np.clip((Y - HOR) / (H - HOR), 0, 1)
-    z = 1.0 / (q + 0.07)
-    u = (X - KX) / ((60 + q * 700) * S)
-    h = (np.sin(u * 6 + z * 1.4 - W0 * 3 * t) + 0.7 * np.sin(u * 11 - z * 2.3 + W0 * 4 * t)
-         + 0.5 * np.sin(u * 3 + z * 3.9 - W0 * 2 * t + 2.1)
-         + 0.3 * np.sin(u * 17 + z * 6.1 + W0 * 5 * t))
+    k = WAT                                                     # water rows, static fields
+    X_ = k["X"]
+    h = (np.sin(k["a1"] - W0 * 3 * t) + 0.7 * np.sin(k["a2"] + W0 * 4 * t)
+         + 0.5 * np.sin(k["a3"] - W0 * 2 * t + 2.1)
+         + 0.3 * np.sin(k["a4"] + W0 * 5 * t))
     wave = 0.5 + 0.5 * np.tanh(h * 0.9)
-    dens = 0.10 + 0.30 * wave * (0.4 + 0.6 * q)
+    dens = 0.10 + 0.30 * wave * k["q46"]
     col = mixc((0.04, 0.28, 0.30), (0.12, 0.55, 0.52), wave)
-    col = mixc(col, (0.55, 0.30, 0.10), np.clip(1 - q * 9, 0, 1) * 0.7)
+    col = mixc(col, (0.55, 0.30, 0.10), k["c9"])
     col = col * (0.16 + 0.75 * dens)[..., None]
     if flash is not None:                                       # fireworks light the river
-        col = col + flash * (0.12 * (1 - q))[..., None]
+        col = col + flash * k["q12"][..., None]
 
-    r0 = int(HOR // CH)                                         # mirror the skyline
-    rm = np.clip(2 * r0 - RR - 1, 0, ROWS - 1).astype(int)
-    cm = np.clip(CC + np.round(h * 0.9), 0, COLS - 1).astype(int)
-    fade = np.exp(-(RR - r0) / (0.10 * H / CH)) * (0.55 + 0.45 * wave)
+    rm = k["rm"]                                                # mirror the skyline
+    cm = np.clip(k["CC"] + np.round(h * 0.9), 0, COLS - 1).astype(int)
+    fade = k["fe"] * (0.55 + 0.45 * wave)
     refl = cv[1][rm, cm] * (0.55 * fade)[..., None]
     col = col + refl
     dens = np.maximum(dens, np.where(cv[2][rm, cm] == MID["sky"], 0, cv[0][rm, cm] * fade * 0.7))
 
-    dyr = Y - KY                                                # candle streak
-    wid = 24 * S + np.clip(dyr, 0, None) * 0.10
-    fr = (np.exp(-((X - fx + 5 * h * S) / wid) ** 2) * (dyr > -40 * S)
-          * np.exp(-np.clip(dyr, 0, None) / (320 * S))
-          * (0.5 + 0.5 * np.sin(dyr * 0.12 / S + h * 2.2 - W0 * 6 * t)) ** 1.5)
+    fr = (np.exp(-((X_ - fx + 5 * h * S) / k["wid"]) ** 2) * k["dyrm"]  # candle streak
+          * k["dyre"]
+          * (0.5 + 0.5 * np.sin(k["dyr12"] + h * 2.2 - W0 * 6 * t)) ** 1.5)
     fr_f = 0.85 + 0.15 * math.sin(W0 * 7 * t)
-    mr = Y - HOR                                                # moon path
-    mw = 20 * S + mr * 0.10
-    mo = (np.exp(-((X - MX + 6 * h * S) / mw) ** 2) * np.exp(-mr / (420 * S))
-          * (0.5 + 0.5 * np.sin(mr * 0.10 / S + h * 3 - W0 * 5 * t)) ** 1.5)
-    pool = np.exp(-(((X - KX) / (300 * S)) ** 2 + ((Y - KY - 15 * S) / (120 * S)) ** 2) * 1.4)
-    pool = pool * 0.75 * (0.35 + 0.65 * wave)
-    rho = np.hypot(X - KX, (Y - KY - 20 * S) * 2.6)             # ripples
-    ring = np.clip(np.cos(rho * 0.055 / S - W0 * 5 * t), 0, 1) ** 6 * np.exp(-rho / (420 * S))
+    mo = (np.exp(-((X_ - MX + 6 * h * S) / k["mw"]) ** 2) * k["moe"]    # moon path
+          * (0.5 + 0.5 * np.sin(k["mr10"] + h * 3 - W0 * 5 * t)) ** 1.5)
+    pool = k["pool"] * 0.75 * (0.35 + 0.65 * wave)
+    ring = np.clip(np.cos(k["rho55"] - W0 * 5 * t), 0, 1) ** 6 * k["rhoe"]  # ripples
     fields = np.stack([dens, 0.9 * fr * fr_f, 0.8 * mo, pool, 0.6 * ring])
     d = fields.max(0)
     best = fields.argmax(0)
     hl = np.array([[0, 0, 0], [1.0, 0.75, 0.25], [1.0, 0.95, 0.72],
                    [1.0, 0.62, 0.20], [1.0, 0.80, 0.40]], F32)[best]
     colf = np.where((best == 0)[..., None], col, hl * (0.2 + 0.9 * d)[..., None] + 0.5 * refl)
-    put(cv, wm, d, colf, "water")
+    r = k["r"]
+    cv[0][r:], cv[1][r:], cv[2][r:] = d, colf, MID["water"]
 
 
 def flame_layer(cv, t, fx, fy):
@@ -539,18 +823,21 @@ def flame_layer(cv, t, fx, fy):
     fh, fw = 150.0 * S, 32.0 * S
     flick = 1 + 0.10 * math.sin(W0 * 7 * t) + 0.06 * math.sin(W0 * 13 * t + 1.3)
     sway = (9 * math.sin(W0 * 5 * t + 0.7) + 5 * math.sin(W0 * 11 * t)) * S
-    s = (fy - Y) / (fh * flick)
+    rs, cs = window(fx - 130 * S, fx + 130 * S, fy - 1.25 * fh, fy + 60 * S)  # flame + halo
+    cv = sub(cv, rs, cs)
+    Xs, Ys = X[rs, cs], Y[rs, cs]
+    s = (fy - Ys) / (fh * flick)
     sc = np.clip(s, 0, 1)
     xo = sway * sc ** 2 + 3 * S * np.sin(s * 9 - W0 * 9 * t) * sc
     wid = fw * np.clip(np.sin(np.pi * sc ** 0.6), 0, 1) ** 0.8 * (1 + 0.08 * np.sin(W0 * 17 * t + s * 5))
-    q = np.abs(X - fx - xo) / np.maximum(wid, 1e-3)
+    q = np.abs(Xs - fx - xo) / np.maximum(wid, 1e-3)
     inside = (s > -0.06) & (s < 1.0) & (q < 1.0)
     core = (q < 0.45) & (s < 0.55)
     col = mixc((1.0, 0.40, 0.08), (1.0, 0.82, 0.25), np.clip(1.25 - s - q * 0.6, 0, 1))
     col = np.where(core[..., None], np.array([1.0, 0.97, 0.78], F32), col)
     put(cv, inside, np.where(core, 1.0, 0.55 + 0.4 * (1 - sc)), col * 1.15, "flame")
-    dh = np.hypot((X - fx - xo * 0.5) / (95 * S), (Y - (fy - 40 * S)) / (120 * S))
-    halo = 0.42 * np.exp(-dh * dh * 2.2) * (hash2(RR, CC, 7.0) > 0.35)
+    dh = np.hypot((Xs - fx - xo * 0.5) / (95 * S), (Ys - (fy - 40 * S)) / (120 * S))
+    halo = 0.42 * np.exp(-dh * dh * 2.2) * (hash2(RR[rs, cs], CC[rs, cs], 7.0) > 0.35)
     putmax(cv, halo, np.array([1.0, 0.62, 0.20], F32) * (halo * 1.8)[..., None], "spark", 0.1)
 
 
@@ -558,11 +845,14 @@ def smoke_layer(cv, t, tips):
     """Thin incense smoke curling upward from each glowing tip."""
     L = 230 * S
     for i, (tx, ty) in enumerate(tips):
-        hgt = (ty - Y) / L
+        rs, cs = window(tx - 12 * S - CW, tx + 12 * S + CW, ty - L, ty)
+        sc = sub(cv, rs, cs)
+        Xs, Ys = X[rs, cs], Y[rs, cs]
+        hgt = (ty - Ys) / L
         xc = tx + 12 * S * hgt * np.sin(hgt * 6 - W0 * 2 * t + i * 2.0)
-        m = (hgt > 0.03) & (hgt < 1) & (np.abs(X - xc) < CW * 0.7)
+        m = (hgt > 0.03) & (hgt < 1) & (np.abs(Xs - xc) < CW * 0.7)
         d = np.where(m, 0.30 * (1 - hgt) * (0.6 + 0.4 * np.sin(hgt * 20 - W0 * 6 * t + i)), 0)
-        putmax(cv, d, np.array([0.55, 0.55, 0.62], F32) * (d * 1.6)[..., None], "smoke", 0.05)
+        putmax(sc, d, np.array([0.55, 0.55, 0.62], F32) * (d * 1.6)[..., None], "smoke", 0.05)
 
 
 def particle_layer(cv, t, fx, fy):
@@ -589,9 +879,12 @@ def render_cells(t):
     lantern_layer(cv, t)
     flash = firework_layer(cv, t) if FIREWORKS_ON else None
     temple_layer(cv, t, fx, fy)
+    if DRAGON_ON:
+        dragon_layer(cv, t, flash)
     water_layer(cv, t, fx, flash)
-    render_krathong(cv, t, reflect=True)
-    render_krathong(cv, t)
+    pose = krathong_pose(t)
+    render_krathong(cv, t, pose, reflect=True)
+    render_krathong(cv, t, pose)
     smoke_layer(cv, t, tips)
     flame_layer(cv, t, fx, fy)
     particle_layer(cv, t, fx, fy)
@@ -668,8 +961,7 @@ class CodePanel:
         self.w, self.h, self.frames, self.fps = w, h, frames, fps
         src = open(os.path.abspath(__file__), encoding="utf-8").read().splitlines()
         a = next(i for i, l in enumerate(src) if l.startswith("def leaf_petal"))
-        b = next(i for i, l in enumerate(src) if l.startswith("def flame_layer"))
-        b = next(i for i in range(b + 1, len(src)) if src[i].startswith("def "))
+        b = next(i for i, l in enumerate(src) if l.startswith("def anchors"))
         self.first, self.lines = a + 1, [self.tokens(l) for l in src[a:b]]
         self.font = mono_font(22)
         self.small = mono_font(18)
@@ -773,31 +1065,80 @@ def render_png(args):
     print(f"wrote {out}")
 
 
-def to_ansi(cv):
-    """Truecolor terminal frame: glyph colour in front, blurred glow behind."""
-    chars = np.array(CHARS)[glyph_index(cv)]
+def terminal_cells(cv):
+    """Glyph index, foreground and glow-background colours (multiples of 8) per cell."""
     src = cv[1] * np.clip(lum(cv[1]) * 1.6, 0, 1)[..., None]
     g = np.pad(src, ((2, 2), (4, 4), (0, 0)), mode="edge")
-    glow = sum(g[dy:dy + ROWS, dx:dx + COLS] for dy in range(5) for dx in range(9)) / 45
-    fg = (np.clip(cv[1] * 1.25 + glow * 0.5, 0, 1) * 31).astype(int) * 8
-    bg = (np.clip(glow * 0.45, 0, 1) * 31).astype(int) * 8
-    fg, bg, chars = fg.tolist(), bg.tolist(), chars.tolist()
-    lines = []
-    for r in range(ROWS):
-        parts, last = [], None
-        for c in range(COLS):
-            key = (*fg[r][c], *bg[r][c])
-            if key != last:
-                parts.append("\x1b[38;2;%d;%d;%d;48;2;%d;%d;%dm" % key)
-                last = key
-            parts.append(chars[r][c])
-        lines.append("".join(parts))
-    return "\x1b[H" + "\x1b[0m\n".join(lines) + "\x1b[0m"
+    hsum = g[:, 0:COLS]                                      # separable 9x5 box blur
+    for dx in range(1, 9):
+        hsum = hsum + g[:, dx:dx + COLS]
+    glow = hsum[0:ROWS]
+    for dy in range(1, 5):
+        glow = glow + hsum[dy:dy + ROWS]
+    glow = glow / 45
+    fg = ((np.clip(cv[1] * 1.25 + glow * 0.5, 0, 1) * 31).astype(np.uint8) * 8)
+    bg = ((np.clip(glow * 0.45, 0, 1) * 31).astype(np.uint8) * 8)
+    return glyph_index(cv).astype(np.uint8), fg, bg
+
+
+class AnsiScreen:
+    """Truecolor output that sends only the cells that changed since the last frame.
+
+    Colour codes are emitted only when they change, a space's foreground is never
+    sent (it can't be seen), and short unchanged gaps are rewritten rather than
+    jumped over, since a cursor move costs more bytes than a few cells.
+    """
+
+    def __init__(self):
+        self.prev = None
+        self.chars = np.array(CHARS)
+        self.space = CHARS.index(" ")
+
+    def frame(self, gi, fg, bg):
+        if self.prev is None:
+            changed = np.ones(gi.shape, bool)
+        else:
+            pg, pf, pb = self.prev
+            changed = ((gi != pg) | (bg != pb).any(-1)
+                       | ((gi != self.space) & (fg != pf).any(-1)))
+        self.prev = (gi, fg, bg)
+        out, cur_f, cur_b, pos = [], None, None, None
+        for r in np.flatnonzero(changed.any(1)).tolist():
+            cols = np.flatnonzero(changed[r])
+            runs = np.split(cols, np.flatnonzero(np.diff(cols) > 5) + 1)
+            ch, fr, br = self.chars[gi[r]].tolist(), fg[r].tolist(), bg[r].tolist()
+            for run in runs:
+                a, b = int(run[0]), int(run[-1])
+                if pos != (r, a):
+                    out.append("\x1b[%d;%dH" % (r + 1, a + 1))
+                for c in range(a, b + 1):
+                    sgr = []
+                    if br[c] != cur_b:
+                        cur_b = br[c]
+                        sgr.append("48;2;%d;%d;%d" % tuple(cur_b))
+                    if ch[c] != " " and fr[c] != cur_f:
+                        cur_f = fr[c]
+                        sgr.append("38;2;%d;%d;%d" % tuple(cur_f))
+                    if sgr:
+                        out.append("\x1b[" + ";".join(sgr) + "m")
+                    out.append(ch[c])
+                pos = (r, b + 1)
+        return "".join(out)
+
+
+def to_ansi(cv):
+    """One full truecolor frame (no diffing) - handy for tests and piping."""
+    return "\x1b[H" + AnsiScreen().frame(*terminal_cells(cv)) + "\x1b[0m"
 
 
 def play_terminal(args):
+    """Live loop. Time snaps to the frame grid, so the 10 s loop repeats exactly: each
+    frame is rendered once, and each frame-to-frame diff is encoded once, then both
+    are replayed from memory (within a budget) on every later pass of the loop."""
     out = sys.stdout
     out.write("\x1b[?25l\x1b[2J")
+    frames = int(round(LOOP * args.fps))
+    budget = 100e6                                   # bytes of cached cells + diffs
     size, t0 = None, time.time()
     try:
         while True:
@@ -805,11 +1146,28 @@ def play_terminal(args):
             if (ts.columns, ts.lines) != size:
                 size = (ts.columns, ts.lines)
                 setup(ts.columns, ts.lines - 1, 8, 16)
-                out.write("\x1b[2J")
+                screen, cells_cache, diff_cache, used, prev_n = AnsiScreen(), {}, {}, 0, None
+                out.write("\x1b[0m\x1b[2J")
             start = time.time()
-            out.write(to_ansi(render_cells((start - t0) % LOOP)))
+            n = int((start - t0) * args.fps) % frames
+            if prev_n is not None and n < prev_n:      # once per loop: full repaint,
+                screen.prev, prev_n = None, None       # so a disturbed screen heals
+            cells = cells_cache.get(n)
+            if cells is None:
+                cells = terminal_cells(render_cells(n / args.fps))
+                if used + COLS * ROWS * 7 <= budget:
+                    cells_cache[n], used = cells, used + COLS * ROWS * 7
+            diff = diff_cache.get((prev_n, n))
+            if diff is None:
+                diff = screen.frame(*cells)
+                if prev_n is not None and used + len(diff) <= budget:
+                    diff_cache[(prev_n, n)], used = diff, used + len(diff)
+            else:
+                screen.prev = cells
+            prev_n = n
+            out.write(diff)
             out.flush()
-            time.sleep(max(0.0, 1 / args.fps - (time.time() - start)))
+            time.sleep(max(0.0, (int((start - t0) * args.fps) + 1) / args.fps - (time.time() - t0)))
     except KeyboardInterrupt:
         pass
     finally:
@@ -828,9 +1186,10 @@ def main():
     ap.add_argument("--png", type=float, metavar="T", help="render one still at time T seconds")
     ap.add_argument("--term", action="store_true", help="play live in a truecolor terminal")
     ap.add_argument("--no-fireworks", action="store_true", help="a quiet night, no fireworks")
+    ap.add_argument("--no-dragon", action="store_true", help="leave the dragon out")
     args = ap.parse_args()
-    global FIREWORKS_ON
-    FIREWORKS_ON = not args.no_fireworks
+    global FIREWORKS_ON, DRAGON_ON
+    FIREWORKS_ON, DRAGON_ON = not args.no_fireworks, not args.no_dragon
     if args.term:
         play_terminal(args)
     elif args.png is not None:

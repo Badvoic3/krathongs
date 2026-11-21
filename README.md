@@ -3,8 +3,8 @@
 <p align="center"><img src="media/preview.gif" width="400" alt="ASCII krathong floating on a moonlit river"></p>
 
 A krathong (banana-leaf float with lotus petals, marigolds, a candle and incense)
-drifting on a moonlit river, with rising khom-loi lanterns, fireworks and Thai
-temple silhouettes. Every pixel is drawn with text glyphs, from one Python file.
+drifting on a moonlit river, with rising khom-loi lanterns, fireworks, a red
+Chinese dragon flying across the sky, and Thai temple silhouettes. Every pixel is drawn with text glyphs, from one Python file.
 
 The krathong is a real 3-D point cloud. Each frame it is projected and
 z-buffered into a character grid, then lit by its flickering candle, the moon and
@@ -62,6 +62,9 @@ This runs the simulation in real time, so nothing is pre-rendered:
 - The scene fills whatever size the terminal is. A bigger window or a smaller font
   (Cmd/Ctrl + minus) gives more detail. Resizing while it runs works.
 - Press **Ctrl-C** to quit.
+- It's light on resources. Each frame is rendered once (about 7–12 ms) and only the
+  cells that changed are sent to the terminal. After the first 10 s loop, frames and
+  diffs replay from memory (capped at about 100 MB), so CPU use drops to almost nothing.
 - If colours look wrong, your terminal lacks 24-bit colour. Try iTerm2 or Windows Terminal.
 
 ### 4. Render a video
@@ -94,6 +97,7 @@ be uploaded straight to TikTok, Reels or Shorts.
 | `--png T` | | render one frame at time `T` seconds |
 | `--term` | | play live in the terminal |
 | `--no-fireworks` | off | a quiet night, with no fireworks (works with every mode) |
+| `--no-dragon` | off | leave the dragon out (works with every mode) |
 
 The output resolution is `cols × cw` by `rows × ch`. Some examples:
 
@@ -118,14 +122,19 @@ to use), a *colour* and a *material*, and the layers are drawn back to front:
    rocket rises from behind the temples, bursts with a sky flash, and its streaking
    sparks sag under gravity, twinkle and fade. The flash also lights the river.
 4. **`temple_layer`**: an ordination hall, chedis and a prang, outlined and warmed by the candle light.
-5. **`water_layer`**: summed perspective waves, a mirrored skyline, the moon path,
+5. **`dragon_layer`**: a red Chinese dragon crossing the sky once per loop, chasing a
+   flaming pearl. Its serpentine body follows an undulating path and is shaded per
+   cell as a tube, with crescent scales, gold belly plates and saw-tooth dorsal fins.
+   It also has a horned head with an opening jaw, teeth and a glowing eye, a flowing
+   mane, whiskers, four clawed legs that paddle in turn, and a flame-tufted tail.
+6. **`water_layer`**: summed perspective waves, a mirrored skyline, the moon path,
    the candle streak, a golden pool and expanding ripples.
-6. **`render_krathong`**: the 3-D float. Leaf folds, lotus petals, marigolds, candle and
+7. **`render_krathong`**: the 3-D float. Leaf folds, lotus petals, marigolds, candle and
    incense are built once as surface point clouds (`build_krathong`). Each frame
    they are posed (`body_pose`), projected (`project`), z-buffered per cell
    (`zbuffer`) and lit by the candle, moon, ambient light and water bounce. The
    same pass is run mirrored to draw the reflection.
-7. **`flame_layer`**, **`smoke_layer`**, **`particle_layer`**: a teardrop flame with
+8. **`flame_layer`**, **`smoke_layer`**, **`particle_layer`**: a teardrop flame with
    multi-frequency flicker, incense smoke, rising embers and fireflies.
 
 Each material has its own glyph ramp (e.g. lotus ` .:=+oO%&@`), and density picks
